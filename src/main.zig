@@ -18,11 +18,13 @@ pub fn main() !void {
     try game.initStateForNow(alc);
 
     const screenWidth = 800;
-    const screenHeight = 450;
+    const screenHeight = 600;
+
+    rl.setConfigFlags(rl.ConfigFlags.flag_window_resizable);
+    rl.setTargetFPS(60);
 
     rl.initWindow(screenWidth, screenHeight, "slet");
     defer rl.closeWindow();
-    rl.setTargetFPS(60);
 
     while (!rl.windowShouldClose()) {
         try game.update(alc);

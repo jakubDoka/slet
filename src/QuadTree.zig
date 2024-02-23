@@ -263,19 +263,19 @@ const Slices = struct {
 
     fn checkClassIntegirty(self: *Slices) void {
         _ = self;
-        //  for (self.classes, 0..) |c, i| {
-        //      std.debug.assert(c == FreeHeader.tail_sentinel or
-        //          self.active_classes & (@as(u32, 1) << @intCast(i)) != 0);
+        // for (self.classes, 0..) |c, i| {
+        //     std.debug.assert(c == FreeHeader.tail_sentinel or
+        //         self.active_classes & (@as(u32, 1) << @intCast(i)) != 0);
 
-        //      var prev: u32 = FreeHeader.tail_sentinel;
-        //      var root = c;
-        //      while (root != FreeHeader.tail_sentinel) {
-        //          const node = self.slice[root].free;
-        //          std.debug.assert(node.prev == prev);
-        //          prev = root;
-        //          root = node.next;
-        //      }
-        //  }
+        //     var prev: u32 = FreeHeader.tail_sentinel;
+        //     var root = c;
+        //     while (root != FreeHeader.tail_sentinel) {
+        //         const node = self.slice[root].free;
+        //         std.debug.assert(node.prev == prev);
+        //         prev = root;
+        //         root = node.next;
+        //     }
+        // }
     }
 
     fn allocSpecific(self: *Slices, index: u32, cap: u32) void {
@@ -382,6 +382,7 @@ pub fn insert(
     id: Slices.Elem,
 ) !Id {
     defer self.checkCountIntegrity(0);
+    self.quads.items[0].total += 1;
     var find_res = self.findQuad(pos, size, 0);
     return try self.insertInternal(alc, find_res, id, 0);
 }
@@ -452,6 +453,7 @@ pub fn update(
 }
 
 pub fn remove(self: *QuadTree, quad: Id, id: Slices.Elem) void {
+    self.quads.items[0].total -= 1;
     self.removeInternal(quad, id, 0);
 }
 
@@ -477,7 +479,6 @@ fn insertInternal(
         cursor = node.parent;
         node = &self.quads.items[cursor];
     }
-    node.total += 1;
 
     return final_id;
 }
@@ -489,19 +490,17 @@ fn removeInternal(self: *QuadTree, quid: Id, id: Slices.Elem, dec_up_to: Id) voi
     std.mem.swap(Slices.Elem, &view[index], &view[view.len - 1]);
     _ = self.slices.pop(&node.entities).?;
 
-    node.total -= 1;
     var cursor = quid;
     while (cursor != dec_up_to) {
+        node.total -= 1;
         self.checkCountIntegrity(cursor);
         cursor = node.parent;
         node = &self.quads.items[cursor];
-        node.total -= 1;
         if (self.slices.lenOf(node.entities) == node.total) {
             self.freeChildren(node.children);
             node.children = invalid_id;
         }
     }
-    self.checkCountIntegrity(dec_up_to);
 }
 
 fn checkCountIntegrity(self: *QuadTree, from: Id) void {
@@ -560,6 +559,7 @@ fn allocChildren(self: *QuadTree, alc: std.mem.Allocator, parent: Id) !Id {
 
 inline fn freeChildren(self: *QuadTree, id: Id) void {
     if (id == invalid_id) return;
+    self.quads.items[id..][0..4].* = undefined;
     self.quads.items[id].parent = self.free;
     self.free = id;
 }
@@ -653,6 +653,7 @@ test {
         id: Id = undefined,
     };
 
+    const vel = 100;
     var ents: [count]Ent = undefined;
     for (&ents, 0..) |*e, i| {
         e.* = .{
@@ -661,8 +662,8 @@ test {
                 rng.intRangeAtMost(i32, -radius, radius),
             },
             .vel = .{
-                rng.intRangeAtMost(i32, -10, 10),
-                rng.intRangeAtMost(i32, -10, 10),
+                rng.intRangeAtMost(i32, -vel, vel),
+                rng.intRangeAtMost(i32, -vel, vel),
             },
         };
         e.id = try quad.insert(alc, e.pos, 4, i);
@@ -679,6 +680,8 @@ test {
             if (e.pos[1] > radius) e.pos[1] -= radius * 2;
             if (e.pos[1] < -radius) e.pos[1] += radius * 2;
 
+            // quad.remove(e.id, i);
+            // e.id = try quad.insert(alc, e.pos, 4, i);
             try quad.update(alc, &e.id, e.pos, 4, i);
         }
     }

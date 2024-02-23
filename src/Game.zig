@@ -2,116 +2,70 @@ const std = @import("std");
 const ecs = @import("ecs.zig");
 const rl = @import("raylib");
 const Quad = @import("QuadTree.zig");
+const vec = @import("vec.zig");
+const comps = @import("comps.zig");
 
 const Game = @This();
+const Vec = vec.T;
+const Team = comps.Team;
 
-const Pos = @Vector(2, i32);
+const rlVec = rl.Vector2.init;
 
-fn posDistSqr(a: Pos, b: Pos) i32 {
-    const d = a - b;
-
-    return @reduce(.Add, d * d);
+fn screenSize() Vec {
+    return .{
+        @floatFromInt(rl.getScreenWidth()),
+        @floatFromInt(rl.getScreenHeight()),
+    };
 }
 
-fn posToRlVec2(pos: Pos) rl.Vector2 {
-    return .{ .x = @floatFromInt(pos[0]), .y = @floatFromInt(pos[1]) };
+fn viewportBounds(camera: rl.Camera2D) [4]f32 {
+    const top_left = rl.getScreenToWorld2D(rlVec(0.0, 0.0), camera);
+    const bottom_right = rl.getScreenToWorld2D(vec.asRl(screenSize()), camera);
+    return .{ top_left.x, top_left.y, bottom_right.x, bottom_right.y };
 }
 
-fn rlVec2ToPos(vec: rl.Vector2) Pos {
-    return .{ @intFromFloat(vec.x), @intFromFloat(vec.y) };
+fn viewportIntBounds(bounds: [4]f32) [4]i32 {
+    var int_bounds: [4]i32 = undefined;
+    for (bounds, &int_bounds) |f, *i| i.* = @intFromFloat(f);
+    return int_bounds;
 }
 
-const EntKind = enum {
-    Player,
-    Unit,
-    Turret,
-};
-
-const Ent = union(EntKind) {
+const Ent = union(enum) {
     const Player = struct {
         controlling: EntId,
     };
 
-    const Unit = struct {
-        pos: Pos,
-        circle: u32,
-        membership: Team.Membership,
+    const segment_comps: comps.Entity = &.{
+        comps.Positioned,
+        comps.Segment,
+        comps.InQuad,
+    };
+    const head_segment_comps: comps.Entity = segment_comps ++ .{comps.Moving};
+    const turret_comps: comps.Entity = &.{
+        comps.Positioned,
+        comps.Turret,
+        comps.InQuad,
     };
 
-    const Turret = struct {
-        pos: Pos,
-        circle: u32,
-        range: i32,
-        target: ?EntId,
-        membership: Team.Membership,
-    };
+    const Segment = comps.MergeComps(segment_comps);
+    const HeadSegment = comps.MergeComps(head_segment_comps);
+    const Turret = comps.MergeComps(turret_comps);
 
     Player: Player,
-    Unit: Unit,
     Turret: Turret,
+    Segment: Segment,
+    HeadSegment: HeadSegment,
 };
 
 const World = ecs.World(Ent);
-const EntId = ecs.EntId(EntKind);
-
-const Team = struct {
-    const invalid_id = std.math.maxInt(Id);
-
-    const Id = u32;
-
-    const Filter = union(enum) {
-        All,
-        Only: Id,
-        Except: Id,
-    };
-
-    const Membership = struct {
-        team: Id,
-        quad: Quad.Id,
-    };
-
-    const Store = struct {
-        slots: std.ArrayListUnmanaged(Team) = .{},
-
-        pub fn deinit(self: *Store, alc: std.mem.Allocator) void {
-            self.clear(alc);
-            self.slots.deinit(alc);
-            self.* = undefined;
-        }
-
-        pub fn add(self: *Store, alc: std.mem.Allocator, team: Team) !Id {
-            try self.slots.append(alc, team);
-            return @intCast(self.slots.items.len - 1);
-        }
-
-        pub fn get(self: *Store, id: Id) *Team {
-            return &self.slots.items[id];
-        }
-
-        pub fn clear(self: *Store, alc: std.mem.Allocator) void {
-            for (self.slots.items) |*slot| slot.deinit(alc);
-            self.slots.items.len = 0;
-        }
-    };
-
-    quad: Quad = .{ .radius = 0 },
-
-    pub fn init(alc: std.mem.Allocator) !Team {
-        return .{ .quad = try Quad.init(alc, 1 << 20) };
-    }
-
-    pub fn deinit(self: *Team, alc: std.mem.Allocator) void {
-        self.quad.deinit(alc);
-        self.* = undefined;
-    }
-};
+const EntId = ecs.Id;
 
 world: World = .{},
 teams: Team.Store = .{},
 query_buffer: std.ArrayListUnmanaged(u64) = .{},
 rng: std.rand.Xoroshiro128 = std.rand.Xoroshiro128.init(0),
-delta: f32 = 0.0,
-camera_target: Pos = .{ 0, 0 },
+delta: f32 = 0.16,
+camera_target: Vec = .{ 0.0, 0.0 },
 
 pub fn deinit(self: *Game, alc: std.mem.Allocator) void {
     self.world.deinit(alc);
@@ -122,66 +76,250 @@ pub fn deinit(self: *Game, alc: std.mem.Allocator) void {
 
 pub fn initStateForNow(self: *Game, alc: std.mem.Allocator) !void {
     const player_team = try self.teams.add(alc, try Team.init(alc));
-    const quad = &self.teams.get(player_team).quad;
 
-    const player_unit = try self.world.add(alc, .{ .Unit = .{
-        .pos = .{ 0, 0 },
-        .circle = 20,
-        .membership = .{
-            .team = player_team,
-            .quad = try quad.insert(alc, .{ 0, 0 }, 20, self.world.nextId(.Unit).toRaw()),
+    var prev_segment: ?EntId = null;
+    for (0..9999) |_| {
+        prev_segment = try self.world.add(alc, .{ .Segment = try comps.initEnt(
+            Ent.segment_comps,
+            self.world.nextId(),
+            &.{
+                .base = 40,
+                .radius = 20,
+            },
+            .{
+                .pos = .{ 200, 200 },
+                .team = player_team,
+                .teams = &self.teams,
+                .alc = alc,
+                .next = prev_segment,
+            },
+        ) });
+    }
+
+    const head = try self.world.add(alc, .{ .HeadSegment = try comps.initEnt(
+        Ent.head_segment_comps,
+        self.world.nextId(),
+        &.{
+            .base = 40,
+            .radius = 20,
+            .accel = 4000,
+            .friction = 0.01,
         },
-    } });
-    _ = try self.world.add(alc, .{ .Player = .{ .controlling = player_unit } });
+        .{
+            .pos = .{ 100, 100 },
+            .team = player_team,
+            .teams = &self.teams,
+            .alc = alc,
+            .next = prev_segment,
+        },
+    ) });
+    _ = try self.world.add(alc, .{ .Player = .{ .controlling = head } });
 
     const enemy_team = try self.teams.add(alc, try Team.init(alc));
-    const enemy_quad = &self.teams.get(enemy_team).quad;
 
     for (0..10000) |_| {
-        const pos = .{
-            self.rng.random().intRangeAtMost(i32, -10000, 10000),
-            self.rng.random().intRangeAtMost(i32, -10000, 10000),
-        };
-        _ = try self.world.add(alc, .{ .Turret = .{
-            .pos = pos,
-            .circle = 20,
-            .range = 300,
-            .target = null,
-            .membership = .{
-                .team = enemy_team,
-                .quad = try enemy_quad.insert(alc, pos, 20, self.world.nextId(.Turret).toRaw()),
+        _ = try self.world.add(alc, .{ .Turret = try comps.initEnt(
+            Ent.turret_comps,
+            self.world.nextId(),
+            &.{
+                .radius = 20,
+                .range = 300,
             },
-        } });
+            .{
+                .pos = .{
+                    randFloat(self.rng.random(), -10000, 10000),
+                    randFloat(self.rng.random(), -10000, 10000),
+                },
+                .team = enemy_team,
+                .teams = &self.teams,
+                .alc = alc,
+            },
+        ) });
     }
 }
 
 pub fn update(self: *Game, alc: std.mem.Allocator) !void {
     self.delta = rl.getFrameTime();
 
+    self.move();
     try self.updateQuads(alc);
     try self.updateTurrets(alc);
+}
+
+fn move(self: *Game) void {
+    {
+        var iter = self.world.query(Ent.HeadSegment);
+        while (iter.next()) |u| {
+            var prev_pos = u.pos.* - vec.rad(u.rot.*, u.base) + u.vel.* * vec.splat(self.delta);
+            u.rot.* = calcNextRotation(u.vel.* * vec.splat(self.delta), u.rot.*, u.base);
+            var current = u.next.*;
+            while (current) |next| if (self.world.queryOne(next, Ent.Segment)) |n| {
+                const diff = prev_pos - n.pos.*;
+                //const diff = n.pos.* - prev_pos; // fun stuff
+                n.rot.* = calcNextRotation(diff, n.rot.*, n.base);
+                n.pos.* = prev_pos;
+                prev_pos -= vec.rad(n.rot.*, n.base);
+                current = n.next.*;
+            } else unreachable;
+        }
+    }
+
+    {
+        var iter = self.world.query(comps.MergeComps(&.{ comps.Positioned, comps.Moving }));
+        while (iter.next()) |u| {
+            u.pos.* += u.vel.* * vec.splat(self.delta);
+            u.vel.* -= (u.vel.* * vec.splat(@min(u.friction * self.delta * 60.0, 1.0)));
+        }
+    }
+}
+
+fn updateTurrets(self: *Game, alc: std.mem.Allocator) !void {
+    var iter = self.world.query(Ent.Turret);
+    while (iter.next()) |t| {
+        const rangeSq = t.range * t.range;
+        if (t.target.*) |target| {
+            if (self.world.queryOne(target, struct { pos: Vec })) |tar|
+                if (vec.dist2(t.pos.*, tar.pos.*) > rangeSq) {
+                    t.target.* = null;
+                } else continue
+            else
+                t.target.* = null;
+        }
+
+        var closest: f32 = std.math.floatMax(f32);
+        var closest_id: ?EntId = null;
+
+        const bounds = [_]i32{
+            @intFromFloat(t.pos[0] - t.range),
+            @intFromFloat(t.pos[1] - t.range),
+            @intFromFloat(t.pos[0] + t.range),
+            @intFromFloat(t.pos[1] + t.range),
+        };
+        for (try self.queryTeams(alc, .{ .Except = t.team.* }, bounds)) |id| {
+            const ent = self.world.queryOne(id, struct { pos: Vec }) orelse continue;
+            const dist = vec.dist2(t.pos.*, ent.pos.*);
+            if (dist < closest) {
+                closest = dist;
+                closest_id = id;
+            }
+        }
+
+        if (closest < rangeSq) if (closest_id) |ci| {
+            t.target.* = ci;
+        };
+    }
+}
+
+fn updateQuads(self: *Game, alc: std.mem.Allocator) !void {
+    var iter = self.world.query(comps.MergeComps(&.{ comps.Positioned, comps.InQuad }));
+    while (iter.next()) |e| {
+        try self.teams.get(e.team.*).quad.update(
+            alc,
+            &e.quad_id.*,
+            vec.asInt(e.pos.*),
+            @intFromFloat(e.radius),
+            e.back_ref.toRaw(),
+        );
+    }
 }
 
 pub fn draw(self: *Game, alc: std.mem.Allocator) !void {
     rl.beginDrawing();
     defer rl.endDrawing();
 
-    rl.clearBackground(rl.Color.white);
+    rl.clearBackground(rl.Color.black);
 
     const camera = self.deriveCamera();
     camera.begin();
-    defer camera.end();
 
     const bounds = viewportBounds(camera);
 
     drawQuadTree(&self.teams.get(1).quad, 0);
 
-    for (try self.queryTeams(alc, .All, bounds)) |id| {
-        if (self.world.selectOne(id, struct { pos: Pos })) |ent|
+    for (try self.queryTeams(alc, .All, viewportIntBounds(bounds))) |id| {
+        if (self.world.queryOne(id, struct { pos: Vec })) |ent|
             if (bounds[0] <= ent.pos[0] and ent.pos[0] <= bounds[2] and
                 bounds[1] <= ent.pos[1] and ent.pos[1] <= bounds[3])
                 self.drawEntity(id);
     }
+
+    camera.end();
+
+    rl.drawFPS(10, 10);
+}
+
+fn drawQuadTree(q: *Quad, from: Quad.Id) void {
+    const node = q.quads.items[from];
+    const radius = q.radius >> node.depth;
+
+    const x = node.pos[0];
+    const y = node.pos[1];
+
+    rl.drawLine(x, y - radius, x, y + radius, rl.Color.red);
+    rl.drawLine(x - radius, y, x + radius, y, rl.Color.red);
+
+    if (node.children != Quad.invalid_id) {
+        for (node.children..node.children + 4) |child|
+            drawQuadTree(q, @intCast(child));
+    }
+}
+
+fn drawEntity(self: *Game, id: EntId) void {
+    switch (self.world.get(id) orelse return) {
+        .Turret => |t| {
+            rl.drawCircleV(vec.asRl(t.pos), t.stats.radius, rl.Color.blue);
+            if (t.target) |target| if (self.world.queryOne(target, struct { pos: Vec })) |tar| {
+                rl.drawLineV(vec.asRl(t.pos), vec.asRl(tar.pos.*), rl.Color.blue);
+            };
+        },
+        .Segment => |s| {
+            rl.drawCircleV(vec.asRl(s.pos - vec.rad(s.rot, s.stats.base * 0.5)), s.stats.radius, rl.Color.red);
+        },
+        .HeadSegment => |s| {
+            rl.drawCircleV(vec.asRl(s.pos - vec.rad(s.rot, s.stats.base * 0.5)), s.stats.radius, rl.Color.green);
+        },
+        else => {},
+    }
+}
+
+fn deriveCamera(self: *Game) rl.Camera2D {
+    return .{
+        .offset = vec.asRl(screenSize() * vec.splat(0.5)),
+        .target = vec.asRl(self.camera_target),
+        .rotation = 0.0,
+        .zoom = 1.0,
+    };
+}
+
+pub fn input(self: *Game) void {
+    self.controlPlayers();
+}
+
+fn controlPlayers(self: *Game) void {
+    const accel = 1000.0;
+
+    var players = self.world.query(Ent.Player);
+    while (players.next()) |p| {
+        switch (self.world.getPtr(p.controlling.*) orelse continue) {
+            .HeadSegment => |u| {
+                var dir = vec.splat(0.0);
+                if (rl.isKeyDown(.key_a)) dir[0] -= 1.0;
+                if (rl.isKeyDown(.key_d)) dir[0] += 1.0;
+                if (rl.isKeyDown(.key_w)) dir[1] -= 1.0;
+                if (rl.isKeyDown(.key_s)) dir[1] += 1.0;
+                dir = (vec.normalize(dir) orelse .{ 0, 0 }) * vec.splat(accel) * vec.splat(self.delta);
+
+                u.vel.* += dir;
+
+                self.camera_target = u.pos.*;
+            },
+            else => {},
+        }
+    }
+}
+
+fn randFloat(rng: std.rand.Random, min: f32, max: f32) f32 {
+    return min + rng.float(f32) * (max - min);
 }
 
 pub fn queryTeams(self: *Game, alc: std.mem.Allocator, tf: Team.Filter, bounds: [4]i32) ![]EntId {
@@ -201,130 +339,11 @@ pub fn queryTeams(self: *Game, alc: std.mem.Allocator, tf: Team.Filter, bounds: 
     return @ptrCast(self.query_buffer.items);
 }
 
-fn viewportBounds(camera: rl.Camera2D) [4]i32 {
-    const top_left = rlVec2ToPos(rl.getScreenToWorld2D(
-        rl.Vector2.init(0.0, 0.0),
-        camera,
-    ));
-    const bottom_right = rlVec2ToPos(rl.getScreenToWorld2D(
-        posToRlVec2(.{ rl.getScreenWidth(), rl.getScreenHeight() }),
-        camera,
-    ));
-
-    return .{ top_left[0], top_left[1], bottom_right[0], bottom_right[1] };
-}
-
-pub fn input(self: *Game) void {
-    self.controlPlayers();
-}
-
-fn drawQuadTree(q: *Quad, from: Quad.Id) void {
-    const node = q.quads.items[from];
-    const radius = q.radius >> node.depth;
-
-    const x = node.pos[0];
-    const y = node.pos[1];
-
-    rl.drawLine(x, y - radius, x, y + radius, rl.Color.red);
-    rl.drawLine(x - radius, y, x + radius, y, rl.Color.red);
-
-    if (node.children != Quad.invalid_id) {
-        for (node.children..node.children + 4) |child|
-            drawQuadTree(q, @intCast(child));
-    }
-}
-
-fn deriveCamera(self: *Game) rl.Camera2D {
-    const target = posToRlVec2(self.camera_target);
-    return .{
-        .offset = .{
-            .x = @floatFromInt(rl.getScreenWidth() >> 1),
-            .y = @floatFromInt(rl.getScreenHeight() >> 1),
-        },
-        .target = target,
-        .rotation = 0.0,
-        .zoom = 1.0,
-    };
-}
-
-fn controlPlayers(self: *Game) void {
-    const speed = 300.0;
-
-    var players = self.world.select(Ent.Player);
-    while (players.next()) |p| {
-        switch (self.world.get(p.ent.controlling.*) orelse continue) {
-            .Unit => |u| {
-                // TODO: diagonal speed is higher
-                if (rl.isKeyDown(.key_a)) u.pos[0] -= @intFromFloat(speed * self.delta);
-                if (rl.isKeyDown(.key_d)) u.pos[0] += @intFromFloat(speed * self.delta);
-                if (rl.isKeyDown(.key_w)) u.pos[1] -= @intFromFloat(speed * self.delta);
-                if (rl.isKeyDown(.key_s)) u.pos[1] += @intFromFloat(speed * self.delta);
-
-                self.camera_target = u.pos.*;
-            },
-            else => {},
-        }
-    }
-}
-
-fn updateTurrets(self: *Game, alc: std.mem.Allocator) !void {
-    var iter = self.world.select(Ent.Turret);
-    while (iter.next()) |t| {
-        const rangeSq = t.ent.range.* * t.ent.range.*;
-        if (t.ent.target.*) |target|
-            if (self.world.selectOne(target, struct { pos: Pos })) |tar|
-                if (posDistSqr(t.ent.pos.*, tar.pos.*) > rangeSq) {
-                    t.ent.target.* = null;
-                } else continue;
-
-        var closest: i32 = std.math.maxInt(i32);
-        var closest_id: ?EntId = null;
-
-        const bounds = .{
-            t.ent.pos[0] - t.ent.range.*,
-            t.ent.pos[1] - t.ent.range.*,
-            t.ent.pos[0] + t.ent.range.*,
-            t.ent.pos[1] + t.ent.range.*,
-        };
-        for (try self.queryTeams(alc, .{ .Except = t.ent.membership.team }, bounds)) |id| {
-            const ent = self.world.selectOne(id, struct { pos: Pos }) orelse continue;
-            const dist = posDistSqr(t.ent.pos.*, ent.pos.*);
-            if (dist < closest) {
-                closest = dist;
-                closest_id = id;
-            }
-        }
-
-        if (closest < rangeSq) if (closest_id) |ci| {
-            t.ent.target.* = ci;
-        };
-    }
-}
-
-fn updateQuads(self: *Game, alc: std.mem.Allocator) !void {
-    var iter = self.world.select(struct { membership: Team.Membership, circle: u32, pos: Pos });
-    while (iter.next()) |e| {
-        try self.teams.get(e.ent.membership.team).quad.update(
-            alc,
-            &e.ent.membership.quad,
-            @bitCast(e.ent.pos.*),
-            @intCast(e.ent.circle.*),
-            e.id.toRaw(),
-        );
-    }
-}
-
-fn drawEntity(self: *Game, id: EntId) void {
-    switch (self.world.get(id) orelse return) {
-        .Unit => |u| {
-            rl.drawCircle(u.pos[0], u.pos[1], @floatFromInt(u.circle.*), rl.Color.red);
-        },
-        .Turret => |t| {
-            rl.drawCircle(t.pos[0], t.pos[1], @floatFromInt(t.circle.*), rl.Color.blue);
-            if (t.target.*) |target| if (self.world.selectOne(target, struct { pos: Pos })) |tar| {
-                rl.drawLine(t.pos[0], t.pos[1], tar.pos[0], tar.pos[1], rl.Color.blue);
-            };
-        },
-        else => {},
-    }
+fn calcNextRotation(step: Vec, prev_rot: f32, base: f32) f32 {
+    std.debug.assert(base > 0.0);
+    const base_unit = vec.unit(prev_rot);
+    const proj = vec.proj(step, base_unit) orelse vec.zero;
+    const a = vec.dist(step, proj);
+    const side = std.math.sign(vec.dot(vec.orth(base_unit), step));
+    return side * std.math.atan(a / base) + prev_rot;
 }

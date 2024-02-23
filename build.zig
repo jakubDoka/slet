@@ -23,7 +23,12 @@ pub fn build(b: *std.Build) !void {
         return;
     }
 
-    const exe = b.addExecutable(.{ .name = "slet", .root_source_file = .{ .path = "src/main.zig" }, .optimize = optimize, .target = target });
+    const exe = b.addExecutable(.{
+        .name = "slet",
+        .root_source_file = .{ .path = "src/main.zig" },
+        .optimize = optimize,
+        .target = target,
+    });
 
     rl.link(b, exe, target, optimize);
     exe.addModule("raylib", raylib);
@@ -35,4 +40,3 @@ pub fn build(b: *std.Build) !void {
 
     b.installArtifact(exe);
 }
-
