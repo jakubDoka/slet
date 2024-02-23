@@ -53,7 +53,23 @@ pub const variants = struct {
             friction: f32,
         };
 
-        vel: Vec = vec.zero,
+        pub const Init = struct {
+            vel: Vec = vec.zero,
+        };
+
+        vel: Vec,
+    };
+
+    pub const Temporary = struct {
+        pub const Stats = struct {
+            ttl: f32,
+        };
+
+        ttl: f32,
+
+        pub fn init(stats: Stats) @This() {
+            return .{ .ttl = stats.ttl };
+        }
     };
 
     pub const Positioned = struct {
@@ -67,9 +83,11 @@ pub const variants = struct {
     pub const Turret = struct {
         pub const Stats = struct {
             range: f32,
+            reload_time: u32,
         };
 
         target: ?ecs.Id = null,
+        reload_until: u32 = 0,
     };
 
     pub const Segment = struct {

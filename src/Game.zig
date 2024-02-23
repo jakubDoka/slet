@@ -46,15 +46,22 @@ const Ent = union(enum) {
         comps.Turret,
         comps.InQuad,
     };
+    const bullet_comps: comps.Entity = &.{
+        comps.Positioned,
+        comps.Temporary,
+        comps.Moving,
+    };
 
     const Segment = comps.MergeComps(segment_comps);
     const HeadSegment = comps.MergeComps(head_segment_comps);
     const Turret = comps.MergeComps(turret_comps);
+    const Bullet = comps.MergeComps(bullet_comps);
 
     Player: Player,
     Turret: Turret,
     Segment: Segment,
     HeadSegment: HeadSegment,
+    Bullet: Bullet,
 };
 
 const World = ecs.World(Ent);
@@ -65,6 +72,7 @@ teams: Team.Store = .{},
 query_buffer: std.ArrayListUnmanaged(u64) = .{},
 rng: std.rand.Xoroshiro128 = std.rand.Xoroshiro128.init(0),
 delta: f32 = 0.16,
+time_millis: u32 = 0,
 camera_target: Vec = .{ 0.0, 0.0 },
 
 pub fn deinit(self: *Game, alc: std.mem.Allocator) void {
@@ -124,6 +132,7 @@ pub fn initStateForNow(self: *Game, alc: std.mem.Allocator) !void {
             &.{
                 .radius = 20,
                 .range = 300,
+                .reload_time = 200,
             },
             .{
                 .pos = .{
@@ -140,6 +149,7 @@ pub fn initStateForNow(self: *Game, alc: std.mem.Allocator) !void {
 
 pub fn update(self: *Game, alc: std.mem.Allocator) !void {
     self.delta = rl.getFrameTime();
+    self.time_millis = @intFromFloat(1000.0 * rl.getTime());
 
     self.move();
     try self.updateQuads(alc);
@@ -177,13 +187,34 @@ fn updateTurrets(self: *Game, alc: std.mem.Allocator) !void {
     var iter = self.world.query(Ent.Turret);
     while (iter.next()) |t| {
         const rangeSq = t.range * t.range;
-        if (t.target.*) |target| {
-            if (self.world.queryOne(target, struct { pos: Vec })) |tar|
-                if (vec.dist2(t.pos.*, tar.pos.*) > rangeSq) {
-                    t.target.* = null;
-                } else continue
-            else
+        if (t.target.*) |target| b: {
+            const tar = self.world.queryOne(target, struct { pos: Vec }) orelse {
                 t.target.* = null;
+                break :b;
+            };
+
+            if (vec.dist2(t.pos.*, tar.pos.*) > rangeSq) {
+                t.target.* = null;
+                break :b;
+            }
+
+            if (t.reload_until.* > self.time_millis) break :b;
+
+            _ = try self.world.add(alc, .{ .Bullet = try comps.initEnt(
+                Ent.bullet_comps,
+                self.world.nextId(),
+                &.{
+                    .friction = 0.0,
+                    .accel = 0.0,
+                    .ttl = 1000,
+                },
+                .{
+                    .pos = t.pos.*,
+                    .vel = vec.normalize(tar.pos.* - t.pos.*).? * vec.splat(1000),
+                },
+            ) });
+
+            continue;
         }
 
         var closest: f32 = std.math.floatMax(f32);
@@ -277,6 +308,9 @@ fn drawEntity(self: *Game, id: EntId) void {
         },
         .HeadSegment => |s| {
             rl.drawCircleV(vec.asRl(s.pos - vec.rad(s.rot, s.stats.base * 0.5)), s.stats.radius, rl.Color.green);
+        },
+        .Bullet => |b| {
+            rl.drawCircleV(vec.asRl(b.pos), 5, rl.Color.white);
         },
         else => {},
     }
