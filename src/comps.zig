@@ -33,6 +33,15 @@ pub const variants = struct {
                 .team = in.team,
             };
         }
+
+        pub fn bounds(pos: Vec, radius: f32) [4]i32 {
+            return [_]i32{
+                @intFromFloat(pos[0] - radius),
+                @intFromFloat(pos[1] - radius),
+                @intFromFloat(pos[0] + radius),
+                @intFromFloat(pos[1] + radius),
+            };
+        }
     };
 
     pub const Alive = struct {
@@ -53,30 +62,39 @@ pub const variants = struct {
             friction: f32,
         };
 
-        pub const Init = struct {
-            vel: Vec = vec.zero,
+        vel: Vec = vec.zero,
+    };
+
+    pub const StaticMovement = struct {
+        vel: Vec = vec.zero,
+    };
+
+    pub const Harmful = struct {
+        pub const Stats = struct {
+            damage: u32,
+            cooldown: u32 = 0,
         };
 
-        vel: Vec,
+        next_hit_after: u32 = 0,
     };
 
     pub const Temporary = struct {
         pub const Stats = struct {
-            ttl: f32,
+            ttl: u32,
         };
 
-        ttl: f32,
+        pub const Init = struct {
+            time_millis: u32,
+        };
 
-        pub fn init(stats: Stats) @This() {
-            return .{ .ttl = stats.ttl };
+        ttl: u32,
+
+        pub fn init(stats: Stats, in: Init) @This() {
+            return .{ .ttl = stats.ttl + in.time_millis };
         }
     };
 
     pub const Positioned = struct {
-        const Init = struct {
-            pos: Vec,
-        };
-
         pos: Vec,
     };
 
@@ -90,18 +108,74 @@ pub const variants = struct {
         reload_until: u32 = 0,
     };
 
-    pub const Segment = struct {
-        const Stats = struct {
-            base: f32,
-        };
-
-        const Init = struct {
-            next: ?ecs.Id = null,
-        };
-
-        rot: f32 = 0,
-        next: ?ecs.Id,
+    pub const Mountable = struct {
+        base: ecs.Id,
+        slot: u32 = 0,
     };
+
+    pub const MountSlots = struct {
+        const Stats = struct {
+            slot_offsets: []const Vec = &.{.{ 0, 0 }},
+        };
+    };
+
+    pub const Segment = struct {
+        rot: f32 = 0,
+        next: ?ecs.Id = null,
+        prev: ?ecs.Id = null,
+
+        pub fn remove(world: anytype, target: ecs.Id) void {
+            const selected = world.queryOne(target, Segment) orelse unreachable;
+            removeOwned(world, selected.prev.*, selected.next.*);
+        }
+
+        pub fn removeOwned(world: anytype, prev: ?ecs.Id, next: ?ecs.Id) void {
+            if (next) |nxt| if (world.queryOne(nxt, Segment)) |n| {
+                n.prev.* = prev;
+            };
+            if (prev) |prv| if (world.queryOne(prv, Segment)) |p| {
+                p.next.* = next;
+            };
+        }
+
+        pub fn insert(world: anytype, after: ecs.Id, target: ecs.Id) void {
+            const selected = world.queryOne(target, Segment) orelse unreachable;
+            const placement = world.queryOne(after, Segment) orelse unreachable;
+            selected.prev.* = after;
+            selected.next.* = placement.next.*;
+            if (placement.next.*) |next| if (world.queryOne(next, Segment)) |n| {
+                n.prev.* = target;
+            };
+            placement.next.* = target;
+        }
+    };
+
+    pub const Core = MarkerType("core");
+
+    pub const ViwableStats = struct {
+        show_stats_until: u32 = 0,
+
+        pub fn trigger(value: *u32, time: u32) void {
+            value.* = time + 1000;
+        }
+    };
+
+    pub fn MarkerType(comptime marker_name: []const u8) type {
+        return struct {
+            pub const Stats = @Type(.{ .Struct = .{
+                .fields = &.{.{
+                    .name = marker_name,
+                    .type = void,
+                    .alignment = 0,
+                    .is_comptime = false,
+                    .default_value = &{},
+                }},
+                .layout = .Auto,
+                .decls = &.{},
+                .is_tuple = false,
+            } });
+        };
+    }
 };
 
 pub const Team = struct {
@@ -204,8 +278,8 @@ test {
     const v = try initEnt(
         dummy,
         undefined,
-        &MergeStats(dummy){ .max_health = 100, .accel = 1.0, .friction = 0.5 },
-        MergeInits(dummy){ .pos = vec.zero },
+        &.{ .max_health = 100, .accel = 1.0, .friction = 0.5 },
+        .{ .pos = vec.zero },
     );
     _ = v;
 }
@@ -227,18 +301,21 @@ pub fn MergeComps(comptime types: []const type) type {
 }
 
 pub fn MergeStats(comptime types: []const type) type {
-    return MergeDecl(types, "Stats");
+    return MergeDecl(types, "Stats", false);
 }
 
 pub fn MergeInits(comptime types: []const type) type {
-    return MergeDecl(types, "Init");
+    return MergeDecl(types, "Init", true);
 }
 
-fn MergeDecl(comptime types: []const type, comptime name: []const u8) type {
+fn MergeDecl(comptime types: []const type, comptime name: []const u8, comptime default_to_self: bool) type {
     var decls: [types.len]type = undefined;
     var i: usize = 0;
     for (types) |t| if (@hasDecl(t, name)) {
         decls[i] = @field(t, name);
+        i += 1;
+    } else if (default_to_self and !@hasDecl(t, "init")) {
+        decls[i] = t;
         i += 1;
     };
     return JustMerge(decls[0..i]);
@@ -267,6 +344,55 @@ fn JustMerge(comptime types: []const type) type {
 
     return @Type(.{ .Struct = .{
         .fields = fields[0..i],
+        .layout = .Auto,
+        .decls = &.{},
+        .is_tuple = false,
+    } });
+}
+
+pub fn queryEnt(ent: anytype, comptime Q: type) ?InlinedStats(Q) {
+    return switch (ent) {
+        inline else => |v| {
+            var q: InlinedStats(Q) = undefined;
+
+            inline for (std.meta.fields(Q)) |field| {
+                if (comptime std.mem.eql(u8, field.name, "stats")) continue;
+                if (!@hasField(@TypeOf(v), field.name)) return null;
+                @field(q, field.name) = @field(v, field.name);
+            }
+
+            if (@hasField(Q, "stats")) {
+                const stats = v.stats;
+                inline for (std.meta.fields(std.meta.Child(std.meta.FieldType(Q, .stats)))) |field| {
+                    if (!@hasField(@TypeOf(stats.*), field.name)) return null;
+                    @field(q, field.name) = @field(stats, field.name);
+                }
+            }
+
+            return q;
+        },
+    };
+}
+
+fn InlinedStats(comptime Q: type) type {
+    if (!@hasField(Q, "stats")) return Q;
+
+    const Stats = std.meta.Child(std.meta.FieldType(Q, .stats));
+
+    var fields: [std.meta.fields(Q).len + std.meta.fields(Stats).len - 1]Type.StructField = undefined;
+    var i: usize = 0;
+    for (std.meta.fields(Q)) |f| {
+        if (std.mem.eql(u8, f.name, "stats")) continue;
+        fields[i] = f;
+        i += 1;
+    }
+    for (std.meta.fields(Stats)) |f| {
+        fields[i] = f;
+        i += 1;
+    }
+
+    return @Type(.{ .Struct = .{
+        .fields = &fields,
         .layout = .Auto,
         .decls = &.{},
         .is_tuple = false,

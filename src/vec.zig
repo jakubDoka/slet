@@ -3,7 +3,7 @@ const rl = @import("raylib");
 
 pub const T = @Vector(2, f32);
 
-pub const zero = T{ 0.0, 0.0 };
+pub const zero = T{ 0, 0 };
 
 pub fn asInt(a: T) [2]i32 {
     return .{ @intFromFloat(a[0]), @intFromFloat(a[1]) };
@@ -71,6 +71,14 @@ pub fn proj(a: T, b: T) ?T {
         return null;
     }
     return b * splat(dot(a, b) / ln);
+}
+
+pub fn clamp(a: T, max_len: f32) T {
+    const l = len(a);
+    if (l > max_len) {
+        return a * splat(max_len / l);
+    }
+    return a;
 }
 
 test "projection" {

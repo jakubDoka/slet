@@ -402,7 +402,7 @@ pub fn update(
 
     while (node.parent != invalid_id) {
         const parent = &self.quads.items[node.parent];
-        if (parent.total >= quad_limit) break;
+        if (parent.total > quad_limit) break;
         quid.* = node.parent;
         node = parent;
         radius <<= 1;
@@ -494,12 +494,12 @@ fn removeInternal(self: *QuadTree, quid: Id, id: Slices.Elem, dec_up_to: Id) voi
     while (cursor != dec_up_to) {
         node.total -= 1;
         self.checkCountIntegrity(cursor);
-        cursor = node.parent;
-        node = &self.quads.items[cursor];
         if (self.slices.lenOf(node.entities) == node.total) {
             self.freeChildren(node.children);
             node.children = invalid_id;
         }
+        cursor = node.parent;
+        node = &self.quads.items[cursor];
     }
 }
 
@@ -586,7 +586,7 @@ fn findQuad(
     while (true) {
         const quad = &self.quads.items[node];
 
-        if (quad.total < quad_limit) return .{ .id = node, .index = null };
+        if (quad.total <= quad_limit) return .{ .id = node, .index = null };
 
         const mask = pos_vec < center_vec;
         const mask_int: u4 = @bitCast(mask);

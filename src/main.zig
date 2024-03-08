@@ -28,7 +28,7 @@ pub fn main() !void {
 
     while (!rl.windowShouldClose()) {
         try game.update(alc);
-        game.input();
+        try game.input(alc);
         try game.draw(alc);
     }
 }
