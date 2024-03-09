@@ -1,76 +1,172 @@
 const std = @import("std");
-const ecs = @import("ecs.zig");
+const World = @import("ecs.zig");
+const ecs = World;
 const rl = @import("raylib");
 const Quad = @import("QuadTree.zig");
 const vec = @import("vec.zig");
-const comps = @import("comps.zig");
 
 const Game = @This();
 const Vec = vec.T;
-const Team = comps.Team;
 
 const rlVec = rl.Vector2.init;
 
-const Ent = union(enum) {
-    const Kind = std.meta.Tag(Ent);
+const EntId = ecs.Id;
 
-    const Player = struct {
-        controlling: EntId,
-        selected: ?EntId = null,
-        placement: ?EntId = null,
+pub const Team = struct {
+    pub const invalid_id = std.math.maxInt(Id);
+
+    pub const Id = u32;
+
+    pub const Filter = union(enum) {
+        All,
+        Only: Id,
+        Except: Id,
     };
 
-    const Enemy = struct {
-        controlling: EntId,
+    pub const Store = struct {
+        slots: std.ArrayListUnmanaged(Team) = .{},
+
+        pub fn deinit(self: *Store, alc: std.mem.Allocator) void {
+            self.clear(alc);
+            self.slots.deinit(alc);
+            self.* = undefined;
+        }
+
+        pub fn add(self: *Store, alc: std.mem.Allocator, team: Team) !Id {
+            try self.slots.append(alc, team);
+            return @intCast(self.slots.items.len - 1);
+        }
+
+        pub fn get(self: *Store, id: Id) *Team {
+            return &self.slots.items[id];
+        }
+
+        pub fn clear(self: *Store, alc: std.mem.Allocator) void {
+            for (self.slots.items) |*slot| slot.deinit(alc);
+            self.slots.items.len = 0;
+        }
     };
 
-    const segment_comps: comps.Entity = &.{
-        comps.Positioned,
-        comps.Segment,
-        comps.StaticMovement,
-        comps.InQuad,
-        comps.Alive,
-        comps.ViwableStats,
-    };
-    const core_segment_comps: comps.Entity = segment_comps ++ .{comps.Core};
-    const head_segment_comps: comps.Entity = segment_comps ++ .{comps.Moving};
-    const turret_comps: comps.Entity = &.{
-        comps.Positioned,
-        comps.Turret,
-        comps.InQuad,
-        comps.Alive,
-        comps.ViwableStats,
-    };
-    const bullet_comps: comps.Entity = &.{
-        comps.Positioned,
-        comps.Temporary,
-        comps.Moving,
-        comps.InQuad,
-        comps.Harmful,
-    };
+    quad: Quad = .{ .radius = 0 },
 
-    const Segment = comps.MergeComps(segment_comps);
-    const CoreSegment = comps.MergeComps(core_segment_comps);
-    const HeadSegment = comps.MergeComps(head_segment_comps);
-    const Turret = comps.MergeComps(turret_comps);
-    const Bullet = comps.MergeComps(bullet_comps);
+    pub fn init(alc: std.mem.Allocator) !Team {
+        return .{ .quad = try Quad.init(alc, 1 << 14) };
+    }
 
-    Segment: Segment,
-    CoreSegment: CoreSegment,
-    HeadSegment: HeadSegment,
-    Player: Player,
-    Turret: Turret,
-    Bullet: Bullet,
+    pub fn deinit(self: *Team, alc: std.mem.Allocator) void {
+        self.quad.deinit(alc);
+        self.* = undefined;
+    }
+};
 
-    fn isSegmentKind(kind: Kind) bool {
-        return switch (kind) {
-            inline else => |t| comptime std.mem.endsWith(u8, @tagName(t), "Segment"),
+pub const Player = struct {
+    controlling: ecs.Id,
+    selected: ?ecs.Id = null,
+    placement: ?ecs.Id = null,
+};
+
+// STATS are used for every entity but only part of them is used in each case
+pub const Stats = struct {
+    radius: f32 = 20,
+    max_health: u32 = 10,
+    accel: f32 = 0.0,
+    friction: f32 = 0.0,
+    damage: u32 = 1,
+    cooldown: u32 = 400,
+    ttl: u32 = 1000,
+    range: f32 = 500,
+    reload_time: u32 = 300,
+    slot_offsets: []const Vec = &.{.{ 0, 0 }},
+};
+
+pub const InQuad = struct {
+    quad_id: Quad.Id = 0,
+    team: Team.Id,
+
+    pub fn bounds(pos: Vec, radius: f32) [4]i32 {
+        return [_]i32{
+            @intFromFloat(pos[0] - radius),
+            @intFromFloat(pos[1] - radius),
+            @intFromFloat(pos[0] + radius),
+            @intFromFloat(pos[1] + radius),
         };
     }
 };
 
-const World = ecs.World(Ent);
-const EntId = ecs.Id;
+pub const Alive = struct {
+    health: u32,
+
+    pub fn init(stats: *const Stats) @This() {
+        return .{ .health = stats.max_health };
+    }
+};
+
+pub const Moving = struct {
+    vel: Vec = vec.zero,
+};
+
+pub const StaticMovement = struct {
+    vel: Vec = vec.zero,
+};
+
+pub const Harmful = struct {
+    next_hit_after: u32 = 0,
+};
+
+pub const Temporary = struct {
+    ttl: u32,
+};
+
+pub const Positioned = struct {
+    pos: Vec,
+};
+
+pub const Turret = struct {
+    target: ?ecs.Id = null,
+    reload_until: u32 = 0,
+};
+
+pub const Mountable = struct {
+    base: ecs.Id,
+    slot: u32 = 0,
+};
+
+pub const Segment = struct {
+    rot: f32 = 0,
+    next: ecs.Id,
+    prev: ecs.Id,
+
+    pub fn remove(world: *World, target: ecs.Id) void {
+        const selected = world.get(target).?.get(Segment) orelse unreachable;
+        removeOwned(world, selected.prev, selected.next);
+    }
+
+    pub fn removeOwned(world: *World, prev: ecs.Id, next: ecs.Id) void {
+        world.get(prev).?.get(Segment).?.next = next;
+        world.get(next).?.get(Segment).?.prev = prev;
+    }
+
+    pub fn insert(world: *World, after: ecs.Id, target: ecs.Id) void {
+        const selected = world.get(target).?.get(Segment).?;
+        const placement = world.get(after).?.get(Segment).?;
+        const after_placement = world.get(placement.next).?.get(Segment).?;
+        selected.prev = after;
+        selected.next = placement.next;
+        after_placement.prev = target;
+        placement.next = target;
+    }
+};
+
+pub const Core = struct {};
+pub const Head = struct {};
+
+pub const ViwableStats = struct {
+    show_stats_until: u32 = 0,
+
+    pub fn trigger(value: *u32, time: u32) void {
+        value.* = time + 1000;
+    }
+};
 
 world: World = .{},
 teams: Team.Store = .{},
@@ -90,93 +186,75 @@ pub fn deinit(self: *Game, alc: std.mem.Allocator) void {
 }
 
 pub fn initStateForNow(self: *Game, alc: std.mem.Allocator) !void {
+    const pos = .{ 200, 200 };
     const player_team = try self.teams.add(alc, try Team.init(alc));
 
-    var prev_segment: ?EntId = null;
+    var prev_segment: EntId = self.world.nextId();
     for (0..9) |_| {
-        if (prev_segment) |ps|
-            self.world.queryOne(ps, struct { prev: ?EntId }).?.prev.* = self.world.nextId();
-        prev_segment = try self.world.add(alc, .{ .Segment = try comps.initEnt(
-            Ent.segment_comps,
-            self.world.nextId(),
-            &.{
-                .radius = 20,
-                .max_health = 20,
-            },
-            .{
-                .pos = .{ 200, 200 },
-                .team = player_team,
-                .teams = &self.teams,
-                .alc = alc,
-                .next = prev_segment,
-            },
-        ) });
+        if (!std.meta.eql(prev_segment, self.world.nextId()))
+            self.world.get(prev_segment).?.get(Segment).?.prev = self.world.nextId();
+        const stats = Stats{ .radius = 20, .max_health = 20 };
+        prev_segment = try self.world.create(alc, .{
+            &stats,
+            Segment{ .next = prev_segment, .prev = undefined },
+            Alive{ .health = stats.max_health },
+            self.newInQuad(alc, &stats, pos, player_team),
+            Moving{},
+            Positioned{ .pos = pos },
+            ViwableStats{},
+        });
     }
 
-    if (prev_segment) |ps|
-        self.world.queryOne(ps, struct { prev: ?EntId }).?.prev.* = self.world.nextId();
-    prev_segment = try self.world.add(alc, .{ .CoreSegment = try comps.initEnt(
-        Ent.core_segment_comps,
-        self.world.nextId(),
-        &.{
-            .radius = 50,
-            .max_health = 300,
-        },
-        .{
-            .pos = .{ 200, 200 },
-            .team = player_team,
-            .teams = &self.teams,
-            .alc = alc,
-            .next = prev_segment,
-        },
-    ) });
+    self.world.get(prev_segment).?.get(Segment).?.prev = self.world.nextId();
+    const core_stats = Stats{ .radius = 50, .max_health = 300 };
+    prev_segment = try self.world.create(alc, .{
+        &core_stats,
+        Segment{ .next = prev_segment, .prev = self.world.nextId() },
+        Alive{ .health = 20 },
+        self.newInQuad(alc, &core_stats, pos, player_team),
+        Positioned{ .pos = pos },
+        Moving{},
+        Core{},
+        ViwableStats{},
+    });
 
-    if (prev_segment) |ps|
-        self.world.queryOne(ps, struct { prev: ?EntId }).?.prev.* = self.world.nextId();
-    const head = try self.world.add(alc, .{ .HeadSegment = try comps.initEnt(
-        Ent.head_segment_comps,
-        self.world.nextId(),
-        &.{
-            .radius = 20,
-            .accel = 700,
-            .friction = 0.02,
-            .max_health = 30,
-        },
-        .{
-            .pos = .{ 100, 100 },
-            .team = player_team,
-            .teams = &self.teams,
-            .alc = alc,
-            .next = prev_segment,
-        },
-    ) });
-    _ = try self.world.add(alc, .{ .Player = .{ .controlling = head } });
+    self.world.get(prev_segment).?.get(Segment).?.prev = self.world.nextId();
+    const head_stats = Stats{ .radius = 20, .accel = 700, .friction = 0.02, .max_health = 30 };
+    _ = try self.world.create(alc, .{
+        &head_stats,
+        Segment{ .next = prev_segment, .prev = self.world.nextId() },
+        Alive{ .health = head_stats.max_health },
+        InQuad{ .team = player_team },
+        Positioned{ .pos = pos },
+        Moving{},
+        ViwableStats{},
+    });
 
     const enemy_team = try self.teams.add(alc, try Team.init(alc));
-
     const area = 1;
-
     for (0..1) |_| {
-        _ = try self.world.add(alc, .{ .Turret = try comps.initEnt(
-            Ent.turret_comps,
-            self.world.nextId(),
-            &.{
-                .radius = 20,
-                .range = 500,
-                .reload_time = 300,
-                .max_health = 10,
-            },
-            .{
-                .pos = .{
-                    randFloat(self.rng.random(), -area, area),
-                    randFloat(self.rng.random(), -area, area),
-                },
-                .team = enemy_team,
-                .teams = &self.teams,
-                .alc = alc,
-            },
-        ) });
+        const turret_stats = Stats{ .radius = 20, .range = 500, .reload_time = 300, .max_health = 10 };
+        const tpos = .{
+            randFloat(self.rng.random(), -area, area),
+            randFloat(self.rng.random(), -area, area),
+        };
+        _ = try self.world.create(alc, .{
+            &turret_stats,
+            Turret{ .reload_until = 0, .target = null },
+            Alive{ .health = turret_stats.max_health },
+            self.newInQuad(alc, &turret_stats, tpos, enemy_team),
+            Positioned{ .pos = tpos },
+            ViwableStats{},
+        });
     }
+}
+
+pub fn newInQuad(self: *Game, alc: std.mem.Allocator, stats: *const Stats, pos: Vec, team: Team.Id) !InQuad {
+    return .{
+        .quad_id = try self.teams.get(team).quad
+            .insert(alc, vec.asInt(pos), @intFromFloat(stats.radius), self.world.nextId().toRaw()),
+        .team = team,
+    };
 }
 
 pub fn update(self: *Game, alc: std.mem.Allocator) !void {
@@ -185,197 +263,214 @@ pub fn update(self: *Game, alc: std.mem.Allocator) !void {
 
     try self.dealDamage(alc);
     try self.killTemporary(alc);
+    self.moveSegments();
     self.move();
     try self.updateQuads(alc);
     try self.updateTurrets(alc);
 }
 
 fn dealDamage(self: *Game, alc: std.mem.Allocator) !void {
-    var iter = self.world.query(comps.MergeComps(&.{ comps.Harmful, comps.Positioned, comps.InQuad }));
+    var iter = self.world.select(struct {
+        id: EntId,
+        hfl: Harmful,
+        posi: Positioned,
+        iq: InQuad,
+        stats: *const Stats,
+    });
     self.ent_id_buffer.items.len = 0;
     while (iter.next()) |h| {
-        if (h.next_hit_after.* > self.time_millis) continue;
+        const stats = h.stats.*;
+        if (h.hfl.next_hit_after > self.time_millis) continue;
 
-        const bounds = comps.InQuad.bounds(h.pos.*, h.radius);
-        for (try self.queryTeams(alc, .{ .Except = h.team.* }, bounds)) |id| {
-            const Q = comps.MergeComps(&.{ comps.Positioned, comps.InQuad, comps.Alive, comps.ViwableStats });
-            const ent = self.world.queryOne(id, Q) orelse continue;
+        const bounds = InQuad.bounds(h.posi.pos, stats.radius);
+        for (try self.queryTeams(alc, .{ .Except = h.iq.team }, bounds)) |id| {
+            const ent = self.world.selectOne(id, struct {
+                posi: Positioned,
+                iq: InQuad,
+                ali: Alive,
+                vs: ViwableStats,
+                stats: *const Stats,
+            }) orelse continue;
 
-            const min_dist = h.radius + ent.radius;
-            if (vec.dist2(h.pos.*, ent.pos.*) > min_dist * min_dist) continue;
-            ent.health.* -|= h.damage;
-            ent.show_stats_until.* = self.time_millis + 1000;
+            const min_dist = stats.radius + ent.stats.*.radius;
+            if (vec.dist2(h.posi.pos, ent.posi.pos) > min_dist * min_dist) continue;
+            ent.ali.health -|= stats.damage;
+            ent.vs.show_stats_until = self.time_millis + 1000;
 
-            if (ent.health.* == 0) {
+            if (ent.ali.health == 0) {
                 if (try self.handleKill(alc, id)) try self.ent_id_buffer.append(alc, id);
             }
 
-            if (h.cooldown == 0) try self.ent_id_buffer.append(alc, h.back_ref) else {
-                h.next_hit_after.* = self.time_millis + h.cooldown;
+            if (stats.cooldown == 0) try self.ent_id_buffer.append(alc, h.id.*) else {
+                h.hfl.next_hit_after = self.time_millis + stats.cooldown;
             }
 
             break;
         }
     }
-    self.removeIdBufferEnts();
+    try self.removeIdBufferEnts();
 }
 
 fn handleKill(self: *Game, alc: std.mem.Allocator, hit: EntId) !bool {
-    return switch (self.world.getPtr(hit).?) {
-        .HeadSegment => |s| b: {
-            var cursor = s.next.*;
+    if (self.world.selectOne(hit, struct {
+        id: EntId,
+        head: Head,
+        seg: Segment,
+        ali: Alive,
+        stats: *const Stats,
+    })) |ent| {
+        var cursor = ent.seg.next;
+        if (std.meta.eql(cursor, ent.id.*)) return true;
 
-            var segment_count: u32 = 0;
-            while (cursor) |c| if (self.world.queryOne(c, struct { next: ?EntId })) |n| {
-                segment_count += 1;
-                cursor = n.next.*;
-            } else unreachable;
+        var segment_count: u32 = 0;
+        while (true) if (self.world.selectOne(cursor, struct { seg: Segment })) |n| {
+            segment_count += 1;
+            if (std.meta.eql(n.seg.next, cursor)) break;
+            cursor = n.seg.next;
+        } else unreachable;
 
-            const damage = std.math.divCeil(u32, s.stats.*.max_health, segment_count) catch
-                break :b true;
+        const damage = std.math.divCeil(u32, ent.stats.*.max_health, segment_count) catch return true;
 
-            cursor = s.next.*;
-            while (cursor) |c| if (self.world.queryOne(c, struct {
-                next: ?EntId,
-                vel: Vec,
-                health: u32,
-                show_stats_until: u32,
-            })) |n| {
-                const prev_health = n.health.*;
-                n.health.* -|= damage;
-                s.health.* += prev_health - n.health.*;
-                n.show_stats_until.* = self.time_millis + 1000;
-                if (s.health.* >= s.stats.*.max_health) {
-                    s.health.* = s.stats.*.max_health;
-                    break;
-                }
-                if (n.health.* == 0) try self.ent_id_buffer.append(alc, c);
-                cursor = n.next.*;
-            } else unreachable;
+        cursor = ent.seg.next;
+        while (true) if (self.world.selectOne(cursor, struct {
+            seg: Segment,
+            mov: Moving,
+            ali: Alive,
+            vs: ViwableStats,
+        })) |n| {
+            const prev_health = n.ali.health;
+            n.ali.health -|= damage;
+            ent.ali.health += prev_health - n.ali.health;
+            n.vs.show_stats_until = self.time_millis + 1000;
+            if (ent.ali.health >= ent.stats.*.max_health) {
+                ent.ali.health = ent.stats.*.max_health;
+                break;
+            }
+            if (n.ali.health == 0) try self.ent_id_buffer.append(alc, cursor);
+            if (std.meta.eql(n.seg.next, cursor)) break;
+            cursor = n.seg.next;
+        } else unreachable;
 
-            break :b false;
-        },
-        else => true,
-    };
+        return false;
+    }
+
+    return false;
 }
 
 fn killTemporary(self: *Game, alc: std.mem.Allocator) !void {
-    var iter = self.world.query(comps.Temporary);
+    var iter = self.world.select(struct { id: EntId, temp: Temporary });
     self.ent_id_buffer.items.len = 0;
-    while (iter.next()) |e| if (e.ttl.* < self.time_millis) {
-        try self.ent_id_buffer.append(alc, e.back_ref);
+    while (iter.next()) |e| if (e.temp.ttl < self.time_millis) {
+        try self.ent_id_buffer.append(alc, e.id.*);
     };
-    self.removeIdBufferEnts();
+    try self.removeIdBufferEnts();
 }
 
-fn removeIdBufferEnts(self: *Game) void {
-    for (self.ent_id_buffer.items) |id|
-        if (self.world.remove(id)) |e| self.cleanEnt(id, e);
+fn removeIdBufferEnts(self: *Game) !void {
+    for (self.ent_id_buffer.items) |id| try self.deinitEnt(id);
 }
 
-fn cleanEnt(self: *Game, id: EntId, ent: Ent) void {
-    if (comps.queryEnt(ent, comps.InQuad)) |b| {
-        self.teams.get(b.team).quad.remove(b.quad_id, id.toRaw());
-    }
+fn deinitEnt(self: *Game, id: EntId) !void {
+    const ent = self.world.get(id) orelse return;
 
-    if (comps.queryEnt(ent, comps.Segment)) |s| {
-        comps.Segment.removeOwned(&self.world, s.prev, s.next);
+    if (ent.get(InQuad)) |iq| self.teams.get(iq.team).quad.remove(iq.quad_id, id.toRaw());
+    if (ent.get(Segment)) |s| Segment.removeOwned(&self.world, s.prev, s.next);
+
+    try self.world.remove(id);
+}
+
+fn moveSegments(self: *Game) void {
+    var iter = self.world.select(struct {
+        head: Head,
+        id: EntId,
+        posi: Positioned,
+        mov: Moving,
+        seg: Segment,
+        stats: *const Stats,
+    });
+    while (iter.next()) |u| {
+        var prev_vel = u.mov.vel * vec.splat(self.delta);
+        var prev_pos = u.posi.pos - vec.rad(u.seg.rot, u.stats.*.radius) + prev_vel;
+        u.seg.rot = calcNextRotation(prev_vel, u.seg.rot, u.stats.*.radius * 2.0);
+        var current = u.seg.next;
+        while (true) if (self.world.selectOne(current, struct {
+            posi: Positioned,
+            mov: Moving,
+            seg: Segment,
+            stats: *const Stats,
+        })) |n| {
+            const snap_ratio = 1.1;
+            var diff = prev_pos - n.posi.pos - vec.rad(n.seg.rot, n.stats.*.radius);
+            if (vec.len2(diff) > vec.len2(prev_vel) * snap_ratio) {
+                diff = vec.clamp(diff, u.stats.*.accel / u.stats.*.friction * self.delta * self.delta);
+            }
+
+            n.seg.rot = calcNextRotation(diff, n.seg.rot, n.stats.*.radius * 2.0);
+            n.posi.pos += diff;
+            n.mov.vel = diff / vec.splat(@max(self.delta, 0.001));
+            prev_vel = diff;
+            prev_pos = n.posi.pos - vec.rad(n.seg.rot, n.stats.*.radius);
+            if (std.meta.eql(n.seg.next, current)) break;
+            current = n.seg.next;
+        } else unreachable;
     }
 }
 
 fn move(self: *Game) void {
-    {
-        var iter = self.world.query(Ent.HeadSegment);
-        while (iter.next()) |u| {
-            var prev_vel = u.vel.* * vec.splat(self.delta);
-            var prev_pos = u.pos.* - vec.rad(u.rot.*, u.radius) + prev_vel;
-            u.rot.* = calcNextRotation(prev_vel, u.rot.*, u.radius * 2.0);
-            var current = u.next.*;
-            while (current) |next| if (self.world.queryOne(next, Ent.Segment)) |n| {
-                const snap_ratio = 1.1;
-                var diff = prev_pos - n.pos.* - vec.rad(n.rot.*, n.radius);
-                if (vec.len2(diff) > vec.len2(prev_vel) * snap_ratio) {
-                    diff = vec.clamp(diff, u.accel / u.friction * self.delta * self.delta);
-                }
-
-                n.rot.* = calcNextRotation(diff, n.rot.*, n.radius * 2.0);
-                n.pos.* += diff;
-                n.vel.* = diff / vec.splat(@max(self.delta, 0.001));
-                prev_vel = diff;
-                prev_pos = n.pos.* - vec.rad(n.rot.*, n.radius);
-                current = n.next.*;
-            } else unreachable;
-        }
-    }
-
-    {
-        var iter = self.world.query(comps.MergeComps(&.{ comps.Positioned, comps.Moving }));
-        while (iter.next()) |u| {
-            u.pos.* += u.vel.* * vec.splat(self.delta);
-            u.vel.* -= (u.vel.* * vec.splat(@min(u.friction * self.delta * 60.0, 1.0)));
-        }
+    var iter = self.world.select(struct { posi: Positioned, mov: Moving, stats: *const Stats });
+    while (iter.next()) |u| {
+        u.posi.pos += u.mov.vel * vec.splat(self.delta);
+        u.mov.vel -= (u.mov.vel * vec.splat(@min(u.stats.*.friction * self.delta * 60.0, 1.0)));
     }
 }
 
 fn updateTurrets(self: *Game, alc: std.mem.Allocator) !void {
-    var iter = self.world.query(Ent.Turret);
+    var iter = self.world.select(struct {
+        posi: Positioned,
+        tur: Turret,
+        stats: *const Stats,
+        iq: InQuad,
+    });
     while (iter.next()) |t| {
-        const rangeSq = t.range * t.range;
-        if (t.target.*) |target| b: {
-            const tar = self.world.queryOne(target, struct { pos: Vec }) orelse {
-                t.target.* = null;
-                break :b;
-            };
+        const stats = t.stats.*;
+        const rangeSq = stats.range * stats.range;
+        if (t.tur.target) |target| b: {
+            const tar = self.world.get(target) orelse break :b;
+            const tar_posi = tar.get(Positioned) orelse break :b;
+            if (vec.dist2(t.posi.pos, tar_posi.pos) > rangeSq) break :b;
+            if (t.tur.reload_until > self.time_millis) continue;
 
-            if (vec.dist2(t.pos.*, tar.pos.*) > rangeSq) {
-                t.target.* = null;
-                break :b;
-            }
-
-            if (t.reload_until.* > self.time_millis) continue;
-
-            const predicted = if (self.world.queryOne(target, struct { vel: Vec })) |tvel|
-                predictTarget(t.pos.*, tar.pos.*, tvel.vel.*, 1000) orelse continue
+            const predicted = if (tar.get(Moving)) |mov|
+                predictTarget(t.posi.pos, tar_posi.pos, mov.vel, 1000) orelse continue
             else
-                tar.pos.*;
+                tar_posi.pos;
 
-            _ = try self.world.add(alc, .{ .Bullet = try comps.initEnt(
-                Ent.bullet_comps,
-                self.world.nextId(),
-                &.{
-                    .friction = 0.0,
-                    .accel = 0.0,
-                    .ttl = 1000,
-                    .radius = 5,
-                    .damage = 1,
-                },
-                .{
-                    .pos = t.pos.*,
-                    .vel = vec.normalize(predicted - t.pos.*).? * vec.splat(1000),
-                    .team = t.team.*,
-                    .teams = &self.teams,
-                    .alc = alc,
-                    .time_millis = self.time_millis,
-                },
-            ) });
+            _ = try self.world.create(alc, .{
+                &Stats{ .radius = 5, .damage = 1, .ttl = 1000 },
+                Harmful{},
+                Temporary{ .ttl = self.time_millis + 1000 },
+                Moving{ .vel = vec.normalize(predicted - t.posi.pos).? * vec.splat(1000) },
+                InQuad{ .team = t.iq.team },
+                Positioned{ .pos = t.posi.pos },
+            });
 
-            t.reload_until.* = self.time_millis + t.reload_time;
-
+            t.tur.reload_until = self.time_millis + stats.reload_time;
             continue;
         }
+        t.tur.target = null;
 
         var closest: f32 = std.math.floatMax(f32);
         var closest_id: ?EntId = null;
 
         const bounds = [_]i32{
-            @intFromFloat(t.pos[0] - t.range),
-            @intFromFloat(t.pos[1] - t.range),
-            @intFromFloat(t.pos[0] + t.range),
-            @intFromFloat(t.pos[1] + t.range),
+            @intFromFloat(t.posi.pos[0] - stats.range),
+            @intFromFloat(t.posi.pos[1] - stats.range),
+            @intFromFloat(t.posi.pos[0] + stats.range),
+            @intFromFloat(t.posi.pos[1] + stats.range),
         };
-        for (try self.queryTeams(alc, .{ .Except = t.team.* }, bounds)) |id| {
-            const ent = self.world.queryOne(id, struct { pos: Vec, health: u32 }) orelse continue;
-            const dist = vec.dist2(t.pos.*, ent.pos.*);
+        for (try self.queryTeams(alc, .{ .Except = t.iq.team }, bounds)) |id| {
+            const ent = self.world.selectOne(id, struct { posi: Positioned, ali: Alive }) orelse continue;
+            const dist = vec.dist2(t.posi.pos, ent.posi.pos);
             if (dist < closest) {
                 closest = dist;
                 closest_id = id;
@@ -383,7 +478,7 @@ fn updateTurrets(self: *Game, alc: std.mem.Allocator) !void {
         }
 
         if (closest < rangeSq) if (closest_id) |ci| {
-            t.target.* = ci;
+            t.tur.target = ci;
         };
     }
 }
@@ -394,14 +489,14 @@ fn dbg(t: anytype) @TypeOf(t) {
 }
 
 fn updateQuads(self: *Game, alc: std.mem.Allocator) !void {
-    var iter = self.world.query(comps.MergeComps(&.{ comps.Positioned, comps.InQuad }));
+    var iter = self.world.select(struct { id: EntId, iq: InQuad, posi: Positioned, stats: *const Stats });
     while (iter.next()) |e| {
-        try self.teams.get(e.team.*).quad.update(
+        try self.teams.get(e.iq.team).quad.update(
             alc,
-            &e.quad_id.*,
-            vec.asInt(e.pos.*),
-            @intFromFloat(e.radius),
-            e.back_ref.toRaw(),
+            &e.iq.quad_id,
+            vec.asInt(e.posi.pos),
+            @intFromFloat(e.stats.*.radius),
+            e.id.toRaw(),
         );
     }
 }
@@ -422,14 +517,13 @@ pub fn draw(self: *Game, alc: std.mem.Allocator) !void {
 
     var visible = try self.queryTeams(alc, .All, viewportIntBounds(bounds));
     var retain_index: u32 = 0;
-    const Q = comps.MergeComps(&.{ comps.Positioned, comps.InQuad });
     for (visible) |id| {
-        const ent = self.world.queryOne(id, Q) orelse continue;
-        const view_range = ent.radius * 2.0;
-        if (bounds[0] > ent.pos[0] + view_range or
-            bounds[2] < ent.pos[0] - view_range or
-            bounds[1] > ent.pos[1] + view_range or
-            bounds[3] < ent.pos[1] - view_range) continue;
+        const ent = self.world.selectOne(id, struct { posi: Positioned, stats: *const Stats }) orelse continue;
+        const view_range = ent.stats.*.radius * 2.0;
+        if (bounds[0] > ent.posi.pos[0] + view_range or
+            bounds[2] < ent.posi.pos[0] - view_range or
+            bounds[1] > ent.posi.pos[1] + view_range or
+            bounds[3] < ent.posi.pos[1] - view_range) continue;
 
         visible[retain_index] = id;
         retain_index += 1;
@@ -446,12 +540,12 @@ pub fn draw(self: *Game, alc: std.mem.Allocator) !void {
         for (visible) |id| f(self, self.world.get(id) orelse continue);
     }
 
-    var iter = self.world.query(Ent.Player);
-    while (iter.next()) |p| if (p.selected.*) |s| if (self.world.queryOne(
+    var iter = self.world.select(struct { pl: Player });
+    while (iter.next()) |p| if (p.pl.selected) |s| if (self.world.selectOne(
         s,
-        comps.MergeComps(&.{ comps.Positioned, comps.InQuad }),
+        struct { posi: Positioned },
     )) |ent| {
-        rl.drawLineV(vec.asRl(ent.pos.*), vec.asRl(mouse), rl.Color.yellow);
+        rl.drawLineV(vec.asRl(ent.posi.pos), vec.asRl(mouse), rl.Color.yellow);
     };
 
     camera.end();
@@ -475,73 +569,76 @@ fn drawQuadTree(q: *Quad, from: Quad.Id) void {
     }
 }
 
-fn drawGroundLayer(self: *Game, ent: Ent) void {
-    switch (ent) {
-        .Turret => |t| {
-            rl.drawCircleV(vec.asRl(t.pos), t.stats.radius, rl.Color.blue);
-            if (t.target) |target| if (self.world.queryOne(target, struct { pos: Vec })) |tar| {
-                rl.drawLineV(vec.asRl(t.pos), vec.asRl(tar.pos.*), rl.Color.blue);
-            };
-        },
-        else => {},
+fn drawGroundLayer(self: *Game, ent: ecs.Entity) void {
+    if (ent.select(struct { tur: Turret, posi: Positioned, stats: *const Stats })) |t| {
+        rl.drawCircleV(vec.asRl(t.posi.pos), t.stats.*.radius, rl.Color.blue);
+        if (t.tur.target) |target| if (self.world.selectOne(
+            target,
+            struct { posi: Positioned },
+        )) |tar| {
+            rl.drawLineV(vec.asRl(t.posi.pos), vec.asRl(tar.posi.pos), rl.Color.blue);
+        };
     }
 }
 
-fn drawBulletLayer(self: *Game, ent: Ent) void {
-    _ = self;
-    switch (ent) {
-        .Bullet => |b| {
-            rl.drawCircleV(vec.asRl(b.pos), 5, rl.Color.white);
-        },
-        else => {},
-    }
-}
-
-fn drawLowAirLayer(self: *Game, ent: Ent) void {
+fn drawLowAirLayer(self: *Game, ent: ecs.Entity) void {
     _ = self;
 
-    if (comps.queryEnt(ent, Ent.Segment)) |s| rl.drawCircleV(
-        vec.asRl(s.pos - vec.rad(s.rot, s.radius)),
+    if (ent.select(struct { posi: Positioned, seg: Segment, stats: *const Stats })) |s| rl.drawCircleV(
+        vec.asRl(s.posi.pos - vec.rad(s.seg.rot, s.stats.*.radius)),
         10,
         rl.Color.yellow,
     );
 }
 
-fn drawAirLayer(self: *Game, ent: Ent) void {
+fn drawAirLayer(self: *Game, ent: ecs.Entity) void {
     _ = self;
-    if (comps.queryEnt(ent, Ent.CoreSegment)) |s| {
-        rl.drawCircleV(vec.asRl(s.pos), s.radius, rl.Color.purple);
-    } else if (comps.queryEnt(ent, Ent.Segment)) |s|
-        rl.drawCircleV(vec.asRl(s.pos), s.radius, rl.Color.red);
+    if (ent.get(Harmful) != null) return;
+    if (ent.select(struct { posi: Positioned, stats: *const Stats })) |s| {
+        const is_core = ent.get(Core) != null;
+        const color = if (is_core) rl.Color.purple else rl.Color.red;
+        rl.drawCircleV(vec.asRl(s.posi.pos), s.stats.*.radius, color);
+    }
 }
 
-fn drawStateLayer(self: *Game, ent: Ent) void {
-    const HealthQuery = comps.MergeComps(&.{ comps.Alive, comps.Positioned, comps.InQuad, comps.ViwableStats });
-    if (comps.queryEnt(ent, HealthQuery)) |s| if (s.show_stats_until > self.time_millis) {
-        const health_perc = toF32(s.health) / toF32(s.max_health);
+fn drawBulletLayer(self: *Game, ent: ecs.Entity) void {
+    _ = self;
+    if (ent.select(struct { posi: Positioned, stats: *const Stats, hfl: Harmful })) |s| {
+        rl.drawCircleV(vec.asRl(s.posi.pos), s.stats.*.radius, rl.Color.white);
+    }
+}
+
+fn drawStateLayer(self: *Game, ent: ecs.Entity) void {
+    const base = ent.select(struct {
+        posi: Positioned,
+        stats: *const Stats,
+        vs: ViwableStats,
+    }) orelse return;
+    if (base.vs.show_stats_until <= self.time_millis) return;
+    const stats = base.stats.*;
+
+    if (ent.get(Alive)) |a| {
+        const health_perc = toF32(a.health) / toF32(stats.max_health);
         rl.drawRing(
-            vec.asRl(s.pos),
-            s.radius + 2,
-            s.radius + 5,
+            vec.asRl(base.posi.pos),
+            stats.radius + 2,
+            stats.radius + 5,
             0,
             health_perc * 360,
-            @intFromFloat(s.radius * 2),
+            @intFromFloat(stats.radius * 2),
             rl.Color.green,
         );
-    };
+    }
 
-    const ReloadQuery = comps.MergeComps(&.{ comps.Turret, comps.Positioned, comps.InQuad, comps.ViwableStats });
-    if (comps.queryEnt(ent, ReloadQuery)) |t| if (t.show_stats_until > self.time_millis and
-        t.reload_until > self.time_millis)
-    {
-        const reload_perc = 1.0 - toF32(t.reload_until - self.time_millis) / toF32(t.reload_time);
+    if (ent.get(Turret)) |t| if (t.reload_until > self.time_millis) {
+        const reload_perc = 1.0 - toF32(t.reload_until - self.time_millis) / toF32(stats.reload_time);
         rl.drawRing(
-            vec.asRl(t.pos),
-            t.radius + 5,
-            t.radius + 8,
+            vec.asRl(base.posi.pos),
+            stats.radius + 5,
+            stats.radius + 8,
             0,
             reload_perc * 360,
-            @intFromFloat(t.radius * 2),
+            @intFromFloat(stats.radius * 2),
             rl.Color.red,
         );
     };
@@ -561,111 +658,87 @@ pub fn input(self: *Game, alc: std.mem.Allocator) !void {
 }
 
 fn controlPlayers(self: *Game, alc: std.mem.Allocator) !void {
-    var players = self.world.query(Ent.Player);
+    var players = self.world.select(struct { pl: Player });
     while (players.next()) |p| {
-        switch (self.world.getPtr(p.controlling.*) orelse continue) {
-            .HeadSegment => |h| {
-                var dir = vec.splat(0.0);
-                if (rl.isKeyDown(.key_a)) dir[0] -= 1.0;
-                if (rl.isKeyDown(.key_d)) dir[0] += 1.0;
-                if (rl.isKeyDown(.key_w)) dir[1] -= 1.0;
-                if (rl.isKeyDown(.key_s)) dir[1] += 1.0;
+        const contr = self.world.get(p.pl.controlling) orelse continue;
+        const base = contr.select(struct {
+            posi: Positioned,
+            stats: *const Stats,
+            iq: InQuad,
+        }) orelse continue;
+        const stats = base.stats.*;
 
-                dir = (vec.normalize(dir) orelse .{ 0, 0 }) * vec.splat(h.stats.*.accel) * vec.splat(self.delta);
+        self.camera_target = base.posi.pos;
 
-                h.vel.* += dir;
+        if (contr.get(Moving)) |m| m.vel += wasdInput() * vec.splat(stats.accel) * vec.splat(self.delta);
 
-                self.camera_target = h.pos.*;
+        const cam = self.deriveCamera();
+        const mouse = mouseWorldPos(cam);
+        const bounds = InQuad.bounds(mouse, 0);
 
-                const cam = self.deriveCamera();
-                const mouse = mouseWorldPos(cam);
-                const bounds = comps.InQuad.bounds(mouse, 0);
-                const Q = comps.MergeComps(&.{ comps.Positioned, comps.InQuad });
+        const hovered = for (try self.queryTeams(alc, .{ .Only = base.iq.team }, bounds)) |id| {
+            const ent = self.world.get(id) orelse continue;
+            const ent_base = ent.select(struct { posi: Positioned, stats: *const Stats }) orelse continue;
+            if (vec.dist2(mouse, ent_base.posi.pos) < sqr(ent_base.stats.*.radius))
+                break ent;
+        } else null;
+        const hovered_id = if (hovered) |h| h.id() else null;
 
-                const hovered = for (try self.queryTeams(alc, .{ .Only = h.team.* }, bounds)) |id| {
-                    const ent = self.world.queryOne(id, Q) orelse continue;
-                    if (vec.dist2(mouse, ent.pos.*) < ent.radius * ent.radius) break id;
-                } else null;
+        if (hovered) |h| if (h.select(struct { vs: ViwableStats })) |s| {
+            s.vs.show_stats_until = self.time_millis + 1000;
+        };
 
-                if (hovered) |hov| if (self.world.queryOne(hov, struct { show_stats_until: u32 })) |s| {
-                    s.show_stats_until.* = self.time_millis + 1000;
-                };
+        if (rl.isMouseButtonPressed(.mouse_button_left)) {
+            p.pl.selected = hovered_id;
+        }
 
-                if (rl.isMouseButtonPressed(.mouse_button_left)) {
-                    p.selected.* = hovered;
-                }
+        if (p.pl.selected != null) if (hovered) |other| {
+            p.pl.placement = other.id();
+        };
 
-                if (p.selected.* != null) if (hovered) |other| {
-                    p.placement.* = other;
-                };
+        defer if (rl.isMouseButtonReleased(.mouse_button_left)) {
+            p.pl.selected = null;
+            p.pl.placement = null;
+        };
 
-                if (rl.isMouseButtonReleased(.mouse_button_left)) b: {
-                    const selected_unw = p.selected.* orelse break :b;
-                    const placement_unw = p.placement.*.?;
+        if (!rl.isMouseButtonReleased(.mouse_button_left)) continue;
 
-                    const sel_eq_pla = std.meta.eql(selected_unw, placement_unw);
+        const selected = p.pl.selected orelse continue;
+        const placement = p.pl.placement orelse continue;
+        const sel_eq_pla = std.meta.eql(selected, placement);
+        var selected_ent = self.world.get(selected) orelse continue;
+        const placement_ent = self.world.get(placement) orelse continue;
 
-                    var selected_kind = self.world.kindOf(selected_unw) orelse break :b;
-                    const placement_kind = self.world.kindOf(placement_unw).?;
+        if (sel_eq_pla) if (!selected_ent.has(Head)) if (try self.world.removeComp(alc, selected, Segment)) |s| {
+            Segment.removeOwned(&self.world, s.prev, s.next);
+            continue;
+        };
 
-                    if (selected_kind == .Segment and sel_eq_pla) {
-                        comps.Segment.remove(&self.world, selected_unw);
+        if (!selected_ent.has(Segment)) {
+            try self.world.addComp(alc, selected, Segment{ .rot = 0, .next = selected, .prev = selected });
+            Segment.insert(&self.world, p.pl.controlling, selected);
+            selected_ent = self.world.get(selected).?;
+        }
 
-                        const selected = self.world.get(selected_unw).?.Segment;
-                        std.debug.assert(try self.world.exchange(alc, selected_unw, .{ .Turret = .{
-                            .pos = selected.pos,
-                            .team = selected.team,
-                            .quad_id = selected.quad_id,
-                            .health = selected.health,
-                            .stats = &.{
-                                .radius = 20,
-                                .range = 500,
-                                .reload_time = 300,
-                                .max_health = 20,
-                            },
-                        } }));
-
-                        break :b;
-                    }
-
-                    if (selected_kind == .Turret and (placement_kind == .Segment or sel_eq_pla)) {
-                        const selected = self.world.get(selected_unw).?.Turret;
-                        std.debug.assert(try self.world.exchange(alc, selected_unw, .{ .Segment = .{
-                            .pos = selected.pos,
-                            .team = selected.team,
-                            .quad_id = selected.quad_id,
-                            .health = selected.health,
-                            .prev = null,
-                            .next = null,
-                            .stats = &.{
-                                .radius = 20,
-                                .max_health = 20,
-                            },
-                        } }));
-
-                        comps.Segment.insert(&self.world, p.controlling.*, selected_unw);
-                        selected_kind = .Segment;
-                    }
-
-                    if ((selected_kind == .Segment or selected_kind == .CoreSegment) and
-                        (placement_kind == .Segment or placement_kind == .HeadSegment or
-                        placement_kind == .CoreSegment) and
-                        !sel_eq_pla)
-                    {
-                        comps.Segment.remove(&self.world, selected_unw);
-                        comps.Segment.insert(&self.world, placement_unw, selected_unw);
-                        break :b;
-                    }
-                }
-
-                if (rl.isMouseButtonReleased(.mouse_button_left)) {
-                    p.selected.* = null;
-                    p.placement.* = null;
-                }
-            },
-            else => {},
+        if (!sel_eq_pla and
+            placement_ent.has(Segment) and
+            !selected_ent.has(Head) and
+            selected_ent.has(Segment))
+        {
+            Segment.remove(&self.world, selected);
+            Segment.insert(&self.world, placement, selected);
+            continue;
         }
     }
+}
+
+fn wasdInput() Vec {
+    var dir = vec.splat(0.0);
+    if (rl.isKeyDown(.key_a)) dir[0] -= 1.0;
+    if (rl.isKeyDown(.key_d)) dir[0] += 1.0;
+    if (rl.isKeyDown(.key_w)) dir[1] -= 1.0;
+    if (rl.isKeyDown(.key_s)) dir[1] += 1.0;
+    return vec.normalize(dir) orelse .{ 0, 0 };
 }
 
 fn randFloat(rng: std.rand.Random, min: f32, max: f32) f32 {
@@ -739,4 +812,8 @@ fn predictTarget(turret: Vec, target: Vec, target_vel: Vec, bullet_speed: f32) ?
 
 fn toF32(v: anytype) f32 {
     return @floatFromInt(v);
+}
+
+fn sqr(v: f32) f32 {
+    return v * v;
 }

@@ -4,7 +4,7 @@ const Type = std.builtin.Type;
 const Mask = u64;
 const ArchId = u6;
 const TypeId = u32;
-const World = @This();
+pub const World = @This();
 
 const TypeMeta = packed struct(u32) {
     alignment: u6,
@@ -129,6 +129,10 @@ const Archetype = struct {
 pub const Id = extern struct {
     index: u32,
     version: u32,
+
+    pub fn toRaw(self: Id) u64 {
+        return @bitCast(self);
+    }
 };
 
 pub const Entity = struct {
@@ -136,16 +140,45 @@ pub const Entity = struct {
     arch: *Archetype.Storage,
     index: u32,
 
-    pub fn get(self: *Entity, comptime C: type) ?*C {
-        const id = componentIdOf(C);
-        if (self.mask & @as(Mask, 1) << @intCast(id) == 0) return null;
-        const index = std.sort.binarySearch(Archetype.Storage.Lane, id, self.arch.lanes, {}, struct {
+    pub fn id(self: Entity) Id {
+        return self.arch.back_refs[self.index];
+    }
+
+    pub fn has(self: Entity, comptime C: type) bool {
+        return self.mask & @as(Mask, 1) << @intCast(componentIdOf(C)) != 0;
+    }
+
+    pub fn get(self: *const Entity, comptime C: type) ?*C {
+        if (!self.has(C)) return null;
+        const tid = componentIdOf(C);
+        const index = std.sort.binarySearch(Archetype.Storage.Lane, tid, self.arch.lanes, {}, struct {
             pub fn cmp(_: void, mid: u32, b: Archetype.Storage.Lane) std.math.Order {
                 return std.math.order(mid, b.type);
             }
         }.cmp).?;
         const lane = self.arch.lanes[index];
         return @alignCast(@ptrCast(lane.data + self.index * lane.meta.size));
+    }
+
+    pub fn select(self: *const Entity, comptime Q: type) ?MapStruct(Q, ToPtr) {
+        const mask = comptime computeMask(@typeInfo(Q).Struct);
+        if (self.mask & mask != mask) return null;
+
+        var selector = staticLanes(@typeInfo(Q).Struct);
+        var i: usize = 0;
+        for (self.arch.lanes) |lane| {
+            if (lane.type == selector[i].type) {
+                selector[i].data = lane.data + self.index * lane.meta.size;
+                i += 1;
+                if (i == selector.len) break;
+            }
+        }
+
+        var result: MapStruct(Q, ToPtr) = undefined;
+        inline for (std.meta.fields(Q), 0..) |f, j| {
+            @field(result, f.name) = &@as([*]f.type, @alignCast(@ptrCast(selector[j].data)))[0];
+        }
+        return result;
     }
 };
 
@@ -203,6 +236,15 @@ pub fn get(self: *World, id: Id) ?Entity {
     };
 }
 
+pub fn nextId(self: *const World) Id {
+    if (self.free_head == Slot.Data.null_free)
+        return .{ .index = @intCast(self.entities.items.len), .version = 0 };
+    return .{
+        .index = self.free_head,
+        .version = self.entities.items[self.free_head].version,
+    };
+}
+
 pub fn create(self: *World, alc: std.mem.Allocator, raw_init: anytype) !Id {
     const init = normalize(raw_init);
     const info = @typeInfo(@TypeOf(init)).Struct;
@@ -223,8 +265,8 @@ pub fn exchangeComps(
     id: Id,
     comptime R: type,
     raw_comps: anytype,
-) !Normalized(R) {
-    const slot = try self.accessId(id);
+) !?Normalized(R) {
+    const slot = self.accessId(id) catch return null;
     const arch = &self.archetypes.items(.storage)[slot.arch];
     const mask = self.archetypes.items(.mask)[slot.arch];
     const remove_mask = comptime computeMask(@typeInfo(R).Struct);
@@ -284,8 +326,8 @@ pub fn exchangeComps(
     return result;
 }
 
-pub fn exchangeComp(self: *World, alc: std.mem.Allocator, id: Id, comptime C: type, comp: anytype) !C {
-    return (try self.exchangeComps(alc, id, struct { C }, .{comp}))[0];
+pub fn exchangeComp(self: *World, alc: std.mem.Allocator, id: Id, comptime C: type, comp: anytype) !?C {
+    return ((try self.exchangeComps(alc, id, struct { C }, .{comp})) orelse return null)[0];
 }
 
 pub fn addComps(self: *World, alc: std.mem.Allocator, id: Id, raw_comps: anytype) !void {
@@ -296,12 +338,12 @@ pub fn addComp(self: *World, alc: std.mem.Allocator, id: Id, comp: anytype) !voi
     try self.addComps(alc, id, .{comp});
 }
 
-pub fn removeComps(self: *World, alc: std.mem.Allocator, id: Id, comptime Q: type) !Q {
+pub fn removeComps(self: *World, alc: std.mem.Allocator, id: Id, comptime Q: type) !?Q {
     return try self.exchangeComps(alc, id, Q, .{});
 }
 
-pub fn removeComp(self: *World, alc: std.mem.Allocator, id: Id, comptime C: type) !C {
-    return (try self.removeComps(alc, id, .{C}))[0];
+pub fn removeComp(self: *World, alc: std.mem.Allocator, id: Id, comptime C: type) !?C {
+    return ((try self.removeComps(alc, id, struct { C })) orelse return null)[0];
 }
 
 pub fn remove(self: *World, id: Id) !void {
@@ -399,6 +441,11 @@ pub fn select(self: *World, comptime Q: type) Query(Q) {
         .match_mask = matches,
         .world = self,
     };
+}
+
+pub fn selectOne(self: *World, id: Id, comptime Q: type) ?MapStruct(Q, ToPtr) {
+    const ent = self.get(id) orelse return null;
+    return ent.select(Q);
 }
 
 fn findArchetype(self: *World, mask: Mask) ?ArchId {
@@ -531,6 +578,7 @@ fn normalize(tuple: anytype) Normalized(@TypeOf(tuple)) {
     var norm: N = undefined;
     inline for (0..std.meta.fields(N).len) |i| inline for (0..std.meta.fields(N).len) |j| {
         if (@TypeOf(tuple[i]) == @TypeOf(norm[j])) {
+            if (@sizeOf(@TypeOf(tuple[i])) == 0) continue;
             norm[j] = tuple[i];
             break;
         }
