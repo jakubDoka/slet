@@ -60,9 +60,19 @@ pub const Team = struct {
 };
 
 pub const Player = struct {
-    controlling: ecs.Id,
     selected: ?ecs.Id = null,
     placement: ?ecs.Id = null,
+};
+
+pub const Enemy = struct {
+    target: ?ecs.Id = null,
+    ms: MovementStage = .Follow,
+
+    pub const MovementStage = enum {
+        Follow,
+        Frozen,
+        TurnAround,
+    };
 };
 
 // STATS are used for every entity but only part of them is used in each case
@@ -71,12 +81,17 @@ pub const Stats = struct {
     max_health: u32 = 10,
     accel: f32 = 0.0,
     friction: f32 = 0.0,
+    innacuraci: f32 = 0.0,
     damage: u32 = 1,
-    cooldown: u32 = 400,
+    damage_cooldown: u32 = 0,
     ttl: u32 = 1000,
     range: f32 = 500,
     reload_time: u32 = 300,
     slot_offsets: []const Vec = &.{.{ 0, 0 }},
+
+    fn bulletRange(self: *const Stats) f32 {
+        return @floatFromInt(self.ttl * 1000);
+    }
 };
 
 pub const InQuad = struct {
@@ -168,6 +183,24 @@ pub const ViwableStats = struct {
     }
 };
 
+const LeveScaling = struct {
+    difficulty: u32 = 0,
+    pace: u32 = 100000,
+    base_tiemout: u32 = 3000,
+    next_enemy_at: u32 = 0,
+
+    pub fn spawnEnemy(self: *LeveScaling, time: u32) bool {
+        if (time < self.next_enemy_at) return false;
+        const factor = time / self.pace;
+        const timeout = self.base_tiemout / (factor + 1 + self.difficulty);
+        self.next_enemy_at = time + timeout;
+        return true;
+    }
+};
+
+ls: LeveScaling = .{
+    .base_tiemout = 0,
+},
 world: World = .{},
 teams: Team.Store = .{},
 query_buffer: std.ArrayListUnmanaged(u64) = .{},
@@ -189,46 +222,64 @@ pub fn initStateForNow(self: *Game, alc: std.mem.Allocator) !void {
     const pos = .{ 200, 200 };
     const player_team = try self.teams.add(alc, try Team.init(alc));
 
-    var prev_segment: EntId = self.world.nextId();
-    for (0..9) |_| {
-        if (!std.meta.eql(prev_segment, self.world.nextId()))
-            self.world.get(prev_segment).?.get(Segment).?.prev = self.world.nextId();
-        const stats = Stats{ .radius = 20, .max_health = 20 };
-        prev_segment = try self.world.create(alc, .{
+    const head_stats = Stats{ .radius = 20, .accel = 700, .friction = 0.02, .max_health = 5 };
+    const head = try self.world.create(alc, .{
+        &head_stats,
+        Head{},
+        self.newSegment(),
+        Alive{ .health = head_stats.max_health },
+        try self.newInQuad(alc, &head_stats, pos, player_team),
+        Positioned{ .pos = pos },
+        Moving{},
+        ViwableStats{},
+        Player{},
+    });
+
+    for (0..100) |_| {
+        const stats = Stats{
+            .radius = 20,
+            .max_health = 20,
+            .reload_time = 2,
+            .innacuraci = 0.1,
+            .range = 1000,
+        };
+        const segment = try self.world.create(alc, .{
             &stats,
-            Segment{ .next = prev_segment, .prev = undefined },
+            self.newSegment(),
             Alive{ .health = stats.max_health },
-            self.newInQuad(alc, &stats, pos, player_team),
+            try self.newInQuad(alc, &stats, pos, player_team),
             Moving{},
             Positioned{ .pos = pos },
             ViwableStats{},
+            Turret{},
         });
+        Segment.insert(&self.world, head, segment);
     }
 
-    self.world.get(prev_segment).?.get(Segment).?.prev = self.world.nextId();
-    const core_stats = Stats{ .radius = 50, .max_health = 300 };
-    prev_segment = try self.world.create(alc, .{
+    const core_stats = Stats{
+        .radius = 50,
+        .max_health = 300,
+        .reload_time = 1000,
+        .range = 500,
+    };
+    const core_segment = try self.world.create(alc, .{
         &core_stats,
-        Segment{ .next = prev_segment, .prev = self.world.nextId() },
-        Alive{ .health = 20 },
-        self.newInQuad(alc, &core_stats, pos, player_team),
+        self.newSegment(),
+        Alive{ .health = core_stats.max_health },
+        try self.newInQuad(alc, &core_stats, pos, player_team),
         Positioned{ .pos = pos },
         Moving{},
         Core{},
         ViwableStats{},
     });
+    Segment.insert(&self.world, head, core_segment);
 
-    self.world.get(prev_segment).?.get(Segment).?.prev = self.world.nextId();
-    const head_stats = Stats{ .radius = 20, .accel = 700, .friction = 0.02, .max_health = 30 };
-    _ = try self.world.create(alc, .{
-        &head_stats,
-        Segment{ .next = prev_segment, .prev = self.world.nextId() },
-        Alive{ .health = head_stats.max_health },
-        InQuad{ .team = player_team },
-        Positioned{ .pos = pos },
-        Moving{},
-        ViwableStats{},
-    });
+    var cursor = head;
+    while (!std.meta.eql(cursor, head)) if (self.world.selectOne(cursor, struct { seg: Segment })) |n| {
+        const next = self.world.selectOne(n.seg.next, struct { seg: Segment }).?;
+        std.debug.assert(std.meta.eql(next.seg.prev, cursor));
+        cursor = n.seg.next;
+    } else unreachable;
 
     const enemy_team = try self.teams.add(alc, try Team.init(alc));
     const area = 1;
@@ -242,11 +293,15 @@ pub fn initStateForNow(self: *Game, alc: std.mem.Allocator) !void {
             &turret_stats,
             Turret{ .reload_until = 0, .target = null },
             Alive{ .health = turret_stats.max_health },
-            self.newInQuad(alc, &turret_stats, tpos, enemy_team),
+            try self.newInQuad(alc, &turret_stats, tpos, enemy_team),
             Positioned{ .pos = tpos },
             ViwableStats{},
         });
     }
+}
+
+pub fn newSegment(self: *Game) Segment {
+    return .{ .next = self.world.nextId(), .prev = self.world.nextId() };
 }
 
 pub fn newInQuad(self: *Game, alc: std.mem.Allocator, stats: *const Stats, pos: Vec, team: Team.Id) !InQuad {
@@ -258,15 +313,100 @@ pub fn newInQuad(self: *Game, alc: std.mem.Allocator, stats: *const Stats, pos: 
 }
 
 pub fn update(self: *Game, alc: std.mem.Allocator) !void {
-    self.delta = rl.getFrameTime();
+    self.delta = @max(rl.getFrameTime(), 0.000001);
     self.time_millis = @intFromFloat(1000.0 * rl.getTime());
 
+    try self.spawnEnemies(alc);
     try self.dealDamage(alc);
     try self.killTemporary(alc);
     self.moveSegments();
     self.move();
     try self.updateQuads(alc);
     try self.updateTurrets(alc);
+    try self.controlEnemies(alc);
+}
+
+fn spawnEnemies(self: *Game, alc: std.mem.Allocator) !void {
+    if (!self.ls.spawnEnemy(self.time_millis)) return;
+
+    // for now
+    const enemy_team = 1;
+
+    var cores = self.world.select(struct {
+        core: Core,
+        id: EntId,
+        posi: Positioned,
+        iq: InQuad,
+        stats: *const Stats,
+    });
+
+    const core = cores.next().?;
+    std.debug.assert(cores.next() == null);
+
+    const random_pos_on_circle = b: {
+        const core_pos = core.posi.pos;
+        const some_radius = 3000;
+        const angle = randFloat(self.rng.random(), 0, 2 * std.math.pi);
+        break :b vec.rad(angle, some_radius) + core_pos;
+    };
+
+    const stats = Stats{ .radius = 20, .max_health = 10, .accel = 1000, .friction = 0.02, .damage_cooldown = 100 };
+    const head = try self.world.create(alc, .{
+        &stats,
+        self.newSegment(),
+        Alive{ .health = stats.max_health },
+        try self.newInQuad(alc, &stats, random_pos_on_circle, enemy_team),
+        Positioned{ .pos = random_pos_on_circle },
+        Moving{},
+        ViwableStats{},
+        Enemy{ .target = core.id.* },
+        Head{},
+    });
+
+    for (0..10) |_| {
+        const segment = try self.world.create(alc, .{
+            &stats,
+            self.newSegment(),
+            Alive{ .health = stats.max_health },
+            try self.newInQuad(alc, &stats, random_pos_on_circle, enemy_team),
+            Moving{},
+            Positioned{ .pos = random_pos_on_circle },
+            //ViwableStats{},
+            Harmful{},
+        });
+        Segment.insert(&self.world, head, segment);
+    }
+}
+
+fn controlEnemies(self: *Game, alc: std.mem.Allocator) !void {
+    _ = alc;
+    var iter = self.world.select(struct {
+        enemy: Enemy,
+        posi: Positioned,
+        mov: Moving,
+        iq: InQuad,
+        stats: *const Stats,
+    });
+    while (iter.next()) |e| {
+        const tar = self.world.selectOne(e.enemy.target.?, struct { posi: Positioned }).?;
+        const diff = tar.posi.pos - e.posi.pos;
+        const dir = switch (e.enemy.ms) {
+            .Follow => diff,
+            .Frozen => e.mov.vel,
+            .TurnAround => vec.orth(tar.posi.pos - e.posi.pos),
+        };
+
+        const norm_dir = vec.normalize(dir) orelse vec.zero;
+        const accel = norm_dir * vec.splat(e.stats.*.accel);
+        e.mov.vel += accel * vec.splat(self.delta);
+
+        const dist = vec.len(diff);
+        e.enemy.ms = switch (e.enemy.ms) {
+            .Follow => if (dist < 30) .Frozen else .Follow,
+            .Frozen => if (dist > 300) .TurnAround else .Frozen,
+            .TurnAround => if (vec.angBetween(diff, e.mov.vel) < std.math.pi * 0.8) .Follow else .TurnAround,
+        };
+    }
 }
 
 fn dealDamage(self: *Game, alc: std.mem.Allocator) !void {
@@ -301,8 +441,8 @@ fn dealDamage(self: *Game, alc: std.mem.Allocator) !void {
                 if (try self.handleKill(alc, id)) try self.ent_id_buffer.append(alc, id);
             }
 
-            if (stats.cooldown == 0) try self.ent_id_buffer.append(alc, h.id.*) else {
-                h.hfl.next_hit_after = self.time_millis + stats.cooldown;
+            if (stats.damage_cooldown == 0) try self.ent_id_buffer.append(alc, h.id.*) else {
+                h.hfl.next_hit_after = self.time_millis + stats.damage_cooldown;
             }
 
             break;
@@ -320,41 +460,41 @@ fn handleKill(self: *Game, alc: std.mem.Allocator, hit: EntId) !bool {
         stats: *const Stats,
     })) |ent| {
         var cursor = ent.seg.next;
-        if (std.meta.eql(cursor, ent.id.*)) return true;
-
         var segment_count: u32 = 0;
-        while (true) if (self.world.selectOne(cursor, struct { seg: Segment })) |n| {
+        while (!std.meta.eql(cursor, ent.id.*)) if (self.world.selectOne(
+            cursor,
+            struct { seg: Segment },
+        )) |n| {
             segment_count += 1;
-            if (std.meta.eql(n.seg.next, cursor)) break;
             cursor = n.seg.next;
         } else unreachable;
 
         const damage = std.math.divCeil(u32, ent.stats.*.max_health, segment_count) catch return true;
 
         cursor = ent.seg.next;
-        while (true) if (self.world.selectOne(cursor, struct {
+        while (!std.meta.eql(cursor, ent.id.*)) if (self.world.selectOne(cursor, struct {
+            id: EntId,
             seg: Segment,
             mov: Moving,
             ali: Alive,
-            vs: ViwableStats,
         })) |n| {
             const prev_health = n.ali.health;
             n.ali.health -|= damage;
             ent.ali.health += prev_health - n.ali.health;
-            n.vs.show_stats_until = self.time_millis + 1000;
+            if (self.world.selectOne(n.id.*, struct { vs: ViwableStats })) |v|
+                v.vs.show_stats_until = self.time_millis + 1000;
             if (ent.ali.health >= ent.stats.*.max_health) {
                 ent.ali.health = ent.stats.*.max_health;
                 break;
             }
             if (n.ali.health == 0) try self.ent_id_buffer.append(alc, cursor);
-            if (std.meta.eql(n.seg.next, cursor)) break;
             cursor = n.seg.next;
         } else unreachable;
 
         return false;
     }
 
-    return false;
+    return true;
 }
 
 fn killTemporary(self: *Game, alc: std.mem.Allocator) !void {
@@ -389,11 +529,11 @@ fn moveSegments(self: *Game) void {
         stats: *const Stats,
     });
     while (iter.next()) |u| {
-        var prev_vel = u.mov.vel * vec.splat(self.delta);
+        const prev_vel = u.mov.vel * vec.splat(self.delta);
         var prev_pos = u.posi.pos - vec.rad(u.seg.rot, u.stats.*.radius) + prev_vel;
         u.seg.rot = calcNextRotation(prev_vel, u.seg.rot, u.stats.*.radius * 2.0);
         var current = u.seg.next;
-        while (true) if (self.world.selectOne(current, struct {
+        while (!std.meta.eql(current, u.id.*)) if (self.world.selectOne(current, struct {
             posi: Positioned,
             mov: Moving,
             seg: Segment,
@@ -406,11 +546,8 @@ fn moveSegments(self: *Game) void {
             }
 
             n.seg.rot = calcNextRotation(diff, n.seg.rot, n.stats.*.radius * 2.0);
-            n.posi.pos += diff;
-            n.mov.vel = diff / vec.splat(@max(self.delta, 0.001));
-            prev_vel = diff;
-            prev_pos = n.posi.pos - vec.rad(n.seg.rot, n.stats.*.radius);
-            if (std.meta.eql(n.seg.next, current)) break;
+            n.mov.vel = diff / vec.splat(self.delta);
+            prev_pos = n.posi.pos + diff - vec.rad(n.seg.rot, n.stats.*.radius);
             current = n.seg.next;
         } else unreachable;
     }
@@ -438,24 +575,29 @@ fn updateTurrets(self: *Game, alc: std.mem.Allocator) !void {
             const tar = self.world.get(target) orelse break :b;
             const tar_posi = tar.get(Positioned) orelse break :b;
             if (vec.dist2(t.posi.pos, tar_posi.pos) > rangeSq) break :b;
-            if (t.tur.reload_until > self.time_millis) continue;
+            if (t.tur.reload_until > self.time_millis) break :b;
+
+            const bullet_stats = Stats{ .radius = 5, .damage = 1, .damage_cooldown = 1, .ttl = 1000, .accel = 1000 };
 
             const predicted = if (tar.get(Moving)) |mov|
-                predictTarget(t.posi.pos, tar_posi.pos, mov.vel, 1000) orelse continue
+                predictTarget(t.posi.pos, tar_posi.pos, mov.vel, bullet_stats.accel) orelse break :b
             else
                 tar_posi.pos;
 
+            // if (vec.dist2(t.posi.pos, predicted) > sqr(bullet_stats.bulletRange())) break :b;
+
+            const innacuracy_offset = randRadVec(self.rng.random(), stats.innacuraci);
             _ = try self.world.create(alc, .{
-                &Stats{ .radius = 5, .damage = 1, .ttl = 1000 },
+                &bullet_stats,
                 Harmful{},
-                Temporary{ .ttl = self.time_millis + 1000 },
-                Moving{ .vel = vec.normalize(predicted - t.posi.pos).? * vec.splat(1000) },
-                InQuad{ .team = t.iq.team },
+                Temporary{ .ttl = self.time_millis + bullet_stats.ttl },
+                Moving{ .vel = (vec.normalize(predicted - t.posi.pos).? + innacuracy_offset) *
+                    vec.splat(bullet_stats.accel) },
+                try self.newInQuad(alc, &bullet_stats, t.posi.pos, t.iq.team),
                 Positioned{ .pos = t.posi.pos },
             });
 
             t.tur.reload_until = self.time_millis + stats.reload_time;
-            continue;
         }
         t.tur.target = null;
 
@@ -658,17 +800,18 @@ pub fn input(self: *Game, alc: std.mem.Allocator) !void {
 }
 
 fn controlPlayers(self: *Game, alc: std.mem.Allocator) !void {
-    var players = self.world.select(struct { pl: Player });
+    var players = self.world.select(struct {
+        pl: Player,
+        id: EntId,
+        posi: Positioned,
+        iq: InQuad,
+        stats: *const Stats,
+    });
     while (players.next()) |p| {
-        const contr = self.world.get(p.pl.controlling) orelse continue;
-        const base = contr.select(struct {
-            posi: Positioned,
-            stats: *const Stats,
-            iq: InQuad,
-        }) orelse continue;
-        const stats = base.stats.*;
+        const contr = self.world.get(p.id.*) orelse continue;
+        const stats = p.stats.*;
 
-        self.camera_target = base.posi.pos;
+        self.camera_target = p.posi.pos;
 
         if (contr.get(Moving)) |m| m.vel += wasdInput() * vec.splat(stats.accel) * vec.splat(self.delta);
 
@@ -676,7 +819,7 @@ fn controlPlayers(self: *Game, alc: std.mem.Allocator) !void {
         const mouse = mouseWorldPos(cam);
         const bounds = InQuad.bounds(mouse, 0);
 
-        const hovered = for (try self.queryTeams(alc, .{ .Only = base.iq.team }, bounds)) |id| {
+        const hovered = for (try self.queryTeams(alc, .{ .Only = p.iq.team }, bounds)) |id| {
             const ent = self.world.get(id) orelse continue;
             const ent_base = ent.select(struct { posi: Positioned, stats: *const Stats }) orelse continue;
             if (vec.dist2(mouse, ent_base.posi.pos) < sqr(ent_base.stats.*.radius))
@@ -709,14 +852,18 @@ fn controlPlayers(self: *Game, alc: std.mem.Allocator) !void {
         var selected_ent = self.world.get(selected) orelse continue;
         const placement_ent = self.world.get(placement) orelse continue;
 
-        if (sel_eq_pla) if (!selected_ent.has(Head)) if (try self.world.removeComp(alc, selected, Segment)) |s| {
-            Segment.removeOwned(&self.world, s.prev, s.next);
+        if (sel_eq_pla) if (!selected_ent.has(Head)) if (try self.world.removeComps(
+            alc,
+            selected,
+            struct { seg: Segment, mov: Moving },
+        )) |s| {
+            Segment.removeOwned(&self.world, s.seg.prev, s.seg.next);
             continue;
         };
 
-        if (!selected_ent.has(Segment)) {
-            try self.world.addComp(alc, selected, Segment{ .rot = 0, .next = selected, .prev = selected });
-            Segment.insert(&self.world, p.pl.controlling, selected);
+        if (!selected_ent.has(Segment) and placement_ent.has(Segment)) {
+            try self.world.addComps(alc, selected, .{ self.newSegment(), Moving{} });
+            Segment.insert(&self.world, p.id.*, selected);
             selected_ent = self.world.get(selected).?;
         }
 

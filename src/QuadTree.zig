@@ -1,313 +1,316 @@
 const std = @import("std");
+const BuddyAllocator = @import("buddy.zig").BuddyAllocator;
 
 const QuadTree = @This();
 
 const Vec = @Vector(4, i32);
 
-const Slices = struct {
-    // 2 milion objects per slice is plenty
-    const size_class_count = std.math.maxInt(SizeClass) - 10;
-    const invalid_elem = std.math.maxInt(Elem);
-    const null_index = std.math.maxInt(Index);
-    const init_cap = 8;
+const Slices = BuddyAllocator(u64, std.math.maxInt(u64), 32, 1);
 
-    const Elem = u64;
-    const Index = u32;
-    const SizeClass = u5;
-    const View = []Elem;
-
-    const FreeHeader = extern struct {
-        // this can be incorrect in case we used all of the memory i the u32 range
-        // and last slot is of size 1, we still canot reach this value since minimal
-        // size of a lice is 2
-        const tail_sentinel = std.math.maxInt(u32) - 1;
-
-        prev: u32 = tail_sentinel,
-        next: u32 = tail_sentinel,
-
-        pub fn isLast(self: FreeHeader) bool {
-            return self.prev == tail_sentinel and self.next == tail_sentinel;
-        }
-    };
-
-    const TakenHeader = extern struct {
-        sentinel: u32 = std.math.maxInt(u32),
-        len: u32,
-    };
-
-    const Slot = extern union {
-        id: Elem,
-        free: FreeHeader,
-        taken: TakenHeader,
-        free_len: u32,
-
-        pub fn getTaken(self: *Slot) *TakenHeader {
-            if (self.isFree()) {
-                unreachable;
-            }
-            return &self.taken;
-        }
-
-        pub fn isFree(self: Slot) bool {
-            return self.taken.sentinel != std.math.maxInt(u32);
-        }
-    };
-
-    classes: [size_class_count]Index = .{FreeHeader.tail_sentinel} ** size_class_count,
-    active_classes: u32 = 0,
-    slice: []Slot = &.{},
-
-    pub fn deinit(self: *Slices, alc: std.mem.Allocator) void {
-        alc.free(self.slice);
-        self.* = undefined;
-    }
-
-    pub fn push(self: *Slices, alc: std.mem.Allocator, index: *Index, value: Elem) !void {
-        var prev = index.*;
-
-        if (prev == null_index) {
-            index.* = try self.alloc(alc, 1);
-            self.view(index.*)[0] = value;
-            return;
-        }
-
-        var len = self.lenOf(prev) + 1;
-        var cap = capFor(len);
-        const buddy = buddyIndex(prev, cap);
-
-        if (len != cap) {
-            self.slice[prev].getTaken().len += 1;
-            //std.debug.assert(self.slice[prev + len].isFree());
-            self.slice[prev + len] = .{ .id = value };
-            return;
-        }
-
-        if (buddy >= self.slice.len) {
-            _ = try self.expandAllocated(alc, cap);
-        } else if (self.slice[buddy].isFree() and self.slice[buddy + 1].free_len == cap) {
-            self.allocSpecific(buddy, cap);
-        } else {
-            index.* = try self.alloc(alc, len);
-            if (len != 1) @memcpy(self.slice[index.*..][0..len], self.slice[prev..][0..len]);
-            self.freeInternal(prev, cap, false);
-
-            std.debug.assert(self.slice[index.* + len].isFree());
-            self.slice[index.*].getTaken().len += 1;
-            self.slice[index.* + len] = .{ .id = value };
-            return;
-        }
-
-        cap *= 2;
-
-        if (buddy < prev) {
-            @memcpy(self.slice[buddy..][0..len], self.slice[prev..][0..len]);
-            prev = buddy;
-            index.* = buddy;
-        }
-
-        self.slice[prev].getTaken().len += 1;
-        self.slice[prev + len] = .{ .id = value };
-    }
-
-    pub fn pop(self: *Slices, index: *Index) ?Elem {
-        var prev = index.*;
-        if (prev == null_index) return null;
-
-        const len = self.slice[prev].getTaken().len;
-        const last = self.slice[prev + len].id;
-        if (len == 1) {
-            index.* = null_index;
-            self.freeInternal(prev, 2, false);
-        } else {
-            if (std.math.isPowerOfTwo(len)) {
-                self.freeInternalNoDefrag(prev + len, len, true);
-            }
-
-            self.slice[prev].getTaken().len -= 1;
-        }
-        return last;
-    }
-
-    pub fn alloc(self: *Slices, alc: std.mem.Allocator, len: u32) !Index {
-        const index = b: {
-            if (len == 0) return null_index;
-            if (self.tryReuse(len)) |index| break :b index;
-            try self.expand(alc, len + 1);
-            break :b self.tryReuse(len).?;
-        };
-        return index;
-    }
-
-    pub fn tryReuse(self: *Slices, len: u32) ?Index {
-        const cap = capFor(len + 1);
-        const free_index = freeIndex(cap);
-
-        const mask = self.active_classes >> @intCast(free_index);
-        if (mask == 0) return null;
-        const class = free_index + @ctz(mask);
-
-        const index = self.allocSizeClass(@intCast(class));
-        std.debug.assert(index & 1 == 0);
-        self.slice[index] = .{ .taken = .{ .len = len } };
-
-        const goal = @as(u32, 1) << @intCast(class + 1);
-        var cursor = cap;
-        while (cursor != goal) {
-            self.freeInternalNoDefrag(index + cursor, cursor, true);
-            cursor *= 2;
-        }
-
-        return index;
-    }
-
-    pub fn free(self: *Slices, index: Index) void {
-        if (index == null_index) return;
-        self.freeInternal(index, capFor(self.slice[index].getTaken().len + 1), false);
-    }
-
-    pub fn view(self: *Slices, index: Index) View {
-        if (index == null_index) return &.{};
-        return @as([*]Elem, @ptrCast(self.slice.ptr))[index + 1 ..][0..self.slice[index].getTaken().len];
-    }
-
-    pub fn lenOf(self: *const Slices, index: Index) u32 {
-        if (index == null_index) return 0;
-        return self.slice[index].getTaken().len;
-    }
-
-    fn expand(self: *Slices, alc: std.mem.Allocator, additional: u32) !void {
-        const prev_cap: u32 = @intCast(self.slice.len);
-        const new_cap = try self.expandAllocated(alc, additional);
-
-        if (prev_cap == 0) {
-            self.freeInternalNoDefrag(0, new_cap, true);
-            return;
-        }
-
-        var cursor = prev_cap;
-        while (cursor != new_cap) {
-            self.freeInternal(cursor, cursor, true);
-            cursor *= 2;
-        }
-    }
-
-    fn expandAllocated(self: *Slices, alc: std.mem.Allocator, additional: u32) !u32 {
-        const prev_cap: u32 = @intCast(self.slice.len);
-        const sum = @as(u32, @intCast(prev_cap + additional));
-        const unskipped_new_cap = std.math.ceilPowerOfTwo(u32, sum) catch
-            std.math.maxInt(u32);
-        const new_cap = @max(init_cap, unskipped_new_cap) * 2;
-
-        self.slice = try alc.realloc(self.slice, new_cap);
-
-        return new_cap;
-    }
-
-    fn freeInternal(self: *Slices, p_index: u32, p_cap: u32, new: bool) void {
-        var cap = p_cap;
-        var index = p_index;
-
-        var free_index = freeIndex(cap);
-        var buddy = buddyIndex(index, cap);
-
-        while (buddy != self.slice.len and
-            self.slice[buddy].isFree() and
-            self.slice[buddy + 1].free_len == cap)
-        {
-            self.allocSpecific(buddy, cap);
-
-            cap *= 2;
-            if (buddy < index) {
-                self.slice[index] = .{ .free = .{} };
-                index = buddy;
-                self.slice[index] = .{ .taken = .{ .len = std.math.maxInt(u32) } };
-            }
-            free_index += 1;
-            buddy = buddyIndex(index, cap);
-        }
-
-        self.freeInternalNoDefrag(index, cap, new);
-    }
-
-    fn freeInternalNoDefrag(self: *Slices, index: u32, cap: u32, new: bool) void {
-        const free_index = freeIndex(cap);
-        const current = self.classes[free_index];
-        if (current != FreeHeader.tail_sentinel) {
-            self.slice[current].free.prev = index;
-        }
-
-        std.debug.assert(!self.slice[index].isFree() or new);
-        self.active_classes |= cap >> 1;
-        self.slice[index] = .{ .free = .{ .next = current } };
-        self.slice[index + 1] = .{ .free_len = cap };
-        std.debug.assert(index & 1 == 0);
-        self.classes[free_index] = index;
-        self.checkClassIntegirty();
-    }
-
-    fn allocSizeClass(self: *Slices, class: u5) Index {
-        std.debug.assert(self.classes[class] != FreeHeader.tail_sentinel);
-
-        const index = self.classes[class];
-        std.debug.assert(self.slice[index].isFree());
-        std.debug.assert(index & ((@as(u32, 1) << class) - 1) == 0);
-        self.classes[class] = self.slice[index].free.next;
-        if (self.classes[class] == FreeHeader.tail_sentinel)
-            self.active_classes &= ~(@as(u32, 1) << class)
-        else
-            self.slice[self.classes[class]].free.prev = FreeHeader.tail_sentinel;
-        self.checkClassIntegirty();
-
-        return index;
-    }
-
-    fn checkClassIntegirty(self: *Slices) void {
-        _ = self;
-        // for (self.classes, 0..) |c, i| {
-        //     std.debug.assert(c == FreeHeader.tail_sentinel or
-        //         self.active_classes & (@as(u32, 1) << @intCast(i)) != 0);
-
-        //     var prev: u32 = FreeHeader.tail_sentinel;
-        //     var root = c;
-        //     while (root != FreeHeader.tail_sentinel) {
-        //         const node = self.slice[root].free;
-        //         std.debug.assert(node.prev == prev);
-        //         prev = root;
-        //         root = node.next;
-        //     }
-        // }
-    }
-
-    fn allocSpecific(self: *Slices, index: u32, cap: u32) void {
-        const ts = FreeHeader.tail_sentinel;
-
-        std.debug.assert(self.slice[index].isFree());
-        self.checkClassIntegirty();
-        const fh = self.slice[index].free;
-        if (fh.next != ts) self.slice[fh.next].free.prev = fh.prev;
-        if (fh.prev != ts) self.slice[fh.prev].free.next = fh.next else {
-            if (fh.next == ts) self.active_classes &= ~(cap >> 1);
-            self.classes[freeIndex(cap)] = fh.next;
-        }
-        self.checkClassIntegirty();
-    }
-
-    fn buddyIndex(index: u32, cap: u32) u32 {
-        std.debug.assert(index & (cap - 1) == 0);
-        const is_left = (index >> @intCast(@ctz(cap))) & 1 == 0;
-        return if (is_left) index + cap else index - cap;
-    }
-
-    fn freeIndex(cap: u32) u5 {
-        std.debug.assert(std.math.isPowerOfTwo(cap));
-        return @intCast(@ctz(cap) - 1);
-    }
-
-    fn capFor(len: u32) u32 {
-        return std.math.ceilPowerOfTwo(u32, len) catch unreachable;
-    }
-};
-
+//const Slices = struct {
+//    // 2 milion objects per slice is plenty
+//    const size_class_count = std.math.maxInt(SizeClass) - 10;
+//    const invalid_elem = std.math.maxInt(Elem);
+//    const null_index = std.math.maxInt(Index);
+//    const init_cap = 8;
+//
+//    const Elem = u64;
+//    const Index = u32;
+//    const SizeClass = u5;
+//    const View = []Elem;
+//
+//    const FreeHeader = extern struct {
+//        // this can be incorrect in case we used all of the memory i the u32 range
+//        // and last slot is of size 1, we still canot reach this value since minimal
+//        // size of a lice is 2
+//        const tail_sentinel = std.math.maxInt(u32) - 1;
+//
+//        prev: u32 = tail_sentinel,
+//        next: u32 = tail_sentinel,
+//
+//        pub fn isLast(self: FreeHeader) bool {
+//            return self.prev == tail_sentinel and self.next == tail_sentinel;
+//        }
+//    };
+//
+//    const TakenHeader = extern struct {
+//        sentinel: u32 = std.math.maxInt(u32),
+//        len: u32,
+//    };
+//
+//    const Slot = extern union {
+//        id: Elem,
+//        free: FreeHeader,
+//        taken: TakenHeader,
+//        free_len: u32,
+//
+//        pub fn getTaken(self: *Slot) *TakenHeader {
+//            if (self.isFree()) {
+//                unreachable;
+//            }
+//            return &self.taken;
+//        }
+//
+//        pub fn isFree(self: Slot) bool {
+//            return self.taken.sentinel != std.math.maxInt(u32);
+//        }
+//    };
+//
+//    classes: [size_class_count]Index = .{FreeHeader.tail_sentinel} ** size_class_count,
+//    active_classes: u32 = 0,
+//    slice: []Slot = &.{},
+//
+//    pub fn deinit(self: *Slices, alc: std.mem.Allocator) void {
+//        alc.free(self.slice);
+//        self.* = undefined;
+//    }
+//
+//    pub fn push(self: *Slices, alc: std.mem.Allocator, index: *Index, value: Elem) !void {
+//        var prev = index.*;
+//
+//        if (prev == null_index) {
+//            index.* = try self.alloc(alc, 1);
+//            self.view(index.*)[0] = value;
+//            return;
+//        }
+//
+//        const len = self.lenOf(prev) + 1;
+//        var cap = capFor(len);
+//        const buddy = buddyIndex(prev, cap);
+//
+//        if (len != cap) {
+//            self.slice[prev].getTaken().len += 1;
+//            //std.debug.assert(self.slice[prev + len].isFree());
+//            self.slice[prev + len] = .{ .id = value };
+//            return;
+//        }
+//
+//        if (buddy >= self.slice.len) {
+//            _ = try self.expandAllocated(alc, cap);
+//        } else if (self.slice[buddy].isFree() and self.slice[buddy + 1].free_len == cap) {
+//            self.allocSpecific(buddy, cap);
+//        } else {
+//            index.* = try self.alloc(alc, len);
+//            if (len != 1) @memcpy(self.slice[index.*..][0..len], self.slice[prev..][0..len]);
+//            self.freeInternal(prev, cap, false);
+//
+//            std.debug.assert(self.slice[index.* + len].isFree());
+//            self.slice[index.*].getTaken().len += 1;
+//            self.slice[index.* + len] = .{ .id = value };
+//            return;
+//        }
+//
+//        cap *= 2;
+//
+//        if (buddy < prev) {
+//            @memcpy(self.slice[buddy..][0..len], self.slice[prev..][0..len]);
+//            prev = buddy;
+//            index.* = buddy;
+//        }
+//
+//        self.slice[prev].getTaken().len += 1;
+//        self.slice[prev + len] = .{ .id = value };
+//    }
+//
+//    pub fn pop(self: *Slices, index: *Index) ?Elem {
+//        const prev = index.*;
+//        if (prev == null_index) return null;
+//
+//        const len = self.slice[prev].getTaken().len;
+//        const last = self.slice[prev + len].id;
+//        if (len == 1) {
+//            index.* = null_index;
+//            self.freeInternal(prev, 2, false);
+//        } else {
+//            if (std.math.isPowerOfTwo(len)) {
+//                self.freeInternalNoDefrag(prev + len, len, true);
+//            }
+//
+//            self.slice[prev].getTaken().len -= 1;
+//        }
+//        return last;
+//    }
+//
+//    pub fn alloc(self: *Slices, alc: std.mem.Allocator, len: u32) !Index {
+//        const index = b: {
+//            if (len == 0) return null_index;
+//            if (self.tryReuse(len)) |index| break :b index;
+//            try self.expand(alc, len + 1);
+//            break :b self.tryReuse(len).?;
+//        };
+//        return index;
+//    }
+//
+//    pub fn tryReuse(self: *Slices, len: u32) ?Index {
+//        const cap = capFor(len + 1);
+//        const free_index = freeIndex(cap);
+//
+//        const mask = self.active_classes >> @intCast(free_index);
+//        if (mask == 0) return null;
+//        const class = free_index + @ctz(mask);
+//
+//        const index = self.allocSizeClass(@intCast(class));
+//        std.debug.assert(index & 1 == 0);
+//        self.slice[index] = .{ .taken = .{ .len = len } };
+//
+//        const goal = @as(u32, 1) << @intCast(class + 1);
+//        var cursor = cap;
+//        while (cursor != goal) {
+//            self.freeInternalNoDefrag(index + cursor, cursor, true);
+//            cursor *= 2;
+//        }
+//
+//        return index;
+//    }
+//
+//    pub fn free(self: *Slices, index: Index) void {
+//        if (index == null_index) return;
+//        self.freeInternal(index, capFor(self.slice[index].getTaken().len + 1), false);
+//    }
+//
+//    pub fn view(self: *Slices, index: Index) View {
+//        if (index == null_index) return &.{};
+//        return @as([*]Elem, @ptrCast(self.slice.ptr))[index + 1 ..][0..self.slice[index].getTaken().len];
+//    }
+//
+//    pub fn lenOf(self: *const Slices, index: Index) u32 {
+//        if (index == null_index) return 0;
+//        return self.slice[index].getTaken().len;
+//    }
+//
+//    fn expand(self: *Slices, alc: std.mem.Allocator, additional: u32) !void {
+//        const prev_cap: u32 = @intCast(self.slice.len);
+//        const new_cap = try self.expandAllocated(alc, additional);
+//
+//        if (prev_cap == 0) {
+//            self.freeInternalNoDefrag(0, new_cap, true);
+//            return;
+//        }
+//
+//        var cursor = prev_cap;
+//        while (cursor != new_cap) {
+//            self.freeInternal(cursor, cursor, true);
+//            cursor *= 2;
+//        }
+//    }
+//
+//    fn expandAllocated(self: *Slices, alc: std.mem.Allocator, additional: u32) !u32 {
+//        const prev_cap: u32 = @intCast(self.slice.len);
+//        const sum = @as(u32, @intCast(prev_cap + additional));
+//        const unskipped_new_cap = std.math.ceilPowerOfTwo(u32, sum) catch
+//            std.math.maxInt(u32);
+//        const new_cap = @max(init_cap, unskipped_new_cap) * 2;
+//
+//        self.slice = try alc.realloc(self.slice, new_cap);
+//
+//        return new_cap;
+//    }
+//
+//    fn freeInternal(self: *Slices, p_index: u32, p_cap: u32, new: bool) void {
+//        var cap = p_cap;
+//        var index = p_index;
+//
+//        var free_index = freeIndex(cap);
+//        var buddy = buddyIndex(index, cap);
+//
+//        while (buddy != self.slice.len and
+//            self.slice[buddy].isFree() and
+//            self.slice[buddy + 1].free_len == cap)
+//        {
+//            self.allocSpecific(buddy, cap);
+//
+//            cap *= 2;
+//            if (buddy < index) {
+//                self.slice[index] = .{ .free = .{} };
+//                index = buddy;
+//                self.slice[index] = .{ .taken = .{ .len = std.math.maxInt(u32) } };
+//            }
+//            free_index += 1;
+//            buddy = buddyIndex(index, cap);
+//        }
+//
+//        self.freeInternalNoDefrag(index, cap, new);
+//    }
+//
+//    fn freeInternalNoDefrag(self: *Slices, index: u32, cap: u32, new: bool) void {
+//        const free_index = freeIndex(cap);
+//        const current = self.classes[free_index];
+//        if (current != FreeHeader.tail_sentinel) {
+//            self.slice[current].free.prev = index;
+//        }
+//
+//        std.debug.assert(!self.slice[index].isFree() or new);
+//        self.active_classes |= cap >> 1;
+//        self.slice[index] = .{ .free = .{ .next = current } };
+//        self.slice[index + 1] = .{ .free_len = cap };
+//        std.debug.assert(index & 1 == 0);
+//        self.classes[free_index] = index;
+//        self.checkClassIntegirty();
+//    }
+//
+//    fn allocSizeClass(self: *Slices, class: u5) Index {
+//        std.debug.assert(self.classes[class] != FreeHeader.tail_sentinel);
+//
+//        const index = self.classes[class];
+//        std.debug.assert(self.slice[index].isFree());
+//        std.debug.assert(index & ((@as(u32, 1) << class) - 1) == 0);
+//        self.classes[class] = self.slice[index].free.next;
+//        if (self.classes[class] == FreeHeader.tail_sentinel)
+//            self.active_classes &= ~(@as(u32, 1) << class)
+//        else
+//            self.slice[self.classes[class]].free.prev = FreeHeader.tail_sentinel;
+//        self.checkClassIntegirty();
+//
+//        return index;
+//    }
+//
+//    fn checkClassIntegirty(self: *Slices) void {
+//        _ = self;
+//        // for (self.classes, 0..) |c, i| {
+//        //     std.debug.assert(c == FreeHeader.tail_sentinel or
+//        //         self.active_classes & (@as(u32, 1) << @intCast(i)) != 0);
+//
+//        //     var prev: u32 = FreeHeader.tail_sentinel;
+//        //     var root = c;
+//        //     while (root != FreeHeader.tail_sentinel) {
+//        //         const node = self.slice[root].free;
+//        //         std.debug.assert(node.prev == prev);
+//        //         prev = root;
+//        //         root = node.next;
+//        //     }
+//        // }
+//    }
+//
+//    fn allocSpecific(self: *Slices, index: u32, cap: u32) void {
+//        const ts = FreeHeader.tail_sentinel;
+//
+//        std.debug.assert(self.slice[index].isFree());
+//        self.checkClassIntegirty();
+//        const fh = self.slice[index].free;
+//        if (fh.next != ts) self.slice[fh.next].free.prev = fh.prev;
+//        if (fh.prev != ts) self.slice[fh.prev].free.next = fh.next else {
+//            if (fh.next == ts) self.active_classes &= ~(cap >> 1);
+//            self.classes[freeIndex(cap)] = fh.next;
+//        }
+//        self.checkClassIntegirty();
+//    }
+//
+//    fn buddyIndex(index: u32, cap: u32) u32 {
+//        std.debug.assert(index & (cap - 1) == 0);
+//        const is_left = (index >> @intCast(@ctz(cap))) & 1 == 0;
+//        return if (is_left) index + cap else index - cap;
+//    }
+//
+//    fn freeIndex(cap: u32) u5 {
+//        std.debug.assert(std.math.isPowerOfTwo(cap));
+//        return @intCast(@ctz(cap) - 1);
+//    }
+//
+//    fn capFor(len: u32) u32 {
+//        return std.math.ceilPowerOfTwo(u32, len) catch unreachable;
+//    }
+//};
+//
 const Pos = [2]i32;
 
 const Quad = struct {
@@ -316,7 +319,52 @@ const Quad = struct {
     pos: Pos = .{ 0, 0 },
     total: u32 = 0,
     children: Id = invalid_id,
-    entities: Slices.Index = Slices.null_index,
+    ent_base: Slices.Index = 0,
+    count: u32 = 0,
+
+    fn entities(self: Quad, slices: Slices) []Slices.Elem {
+        return slices.mem[self.ent_base..][0..self.count];
+    }
+
+    fn pushEntity(self: *Quad, slices: *Slices, gpa: std.mem.Allocator, id: Slices.Elem) !void {
+        if (self.count == 0) {
+            self.ent_base = try slices.alloc(gpa, 2);
+            slices.mem[self.ent_base] = id;
+            self.count += 1;
+            return;
+        }
+
+        if (self.count == @max(ceil(self.count), 2)) {
+            if (!slices.grow(self.ent_base, self.count)) {
+                const new = try slices.alloc(gpa, self.count * 2);
+                @memcpy(slices.mem[new..][0..self.count], slices.mem[self.ent_base..][0..self.count]);
+                self.ent_base = new;
+            }
+        }
+
+        slices.mem[self.ent_base + self.count] = id;
+        self.count += 1;
+    }
+
+    fn popEntity(self: *Quad, slices: *Slices) Slices.Elem {
+        std.debug.assert(self.count != 0);
+
+        const value = slices.mem[self.ent_base + self.count - 1];
+
+        if (self.count == 1) {
+            slices.free(self.ent_base, 2);
+            self.ent_base = 0;
+        } else if (ceil(self.count) > @max(ceil(self.count - 1), 2)) {
+            slices.shrink(self.ent_base, ceil(self.count));
+        }
+        self.count -= 1;
+
+        return value;
+    }
+
+    inline fn ceil(len: u32) u32 {
+        return std.math.ceilPowerOfTwo(u32, len) catch unreachable;
+    }
 };
 
 const FindResult = struct {
@@ -366,7 +414,7 @@ pub fn query(
         ty > cy + radius or
         by < cy - radius) return;
 
-    try buffer.appendSlice(self.slices.view(quad.entities));
+    try buffer.appendSlice(quad.entities(self.slices));
 
     if (quad.children == invalid_id) return;
 
@@ -383,7 +431,7 @@ pub fn insert(
 ) !Id {
     defer self.checkCountIntegrity(0);
     self.quads.items[0].total += 1;
-    var find_res = self.findQuad(pos, size, 0);
+    const find_res = self.findQuad(pos, size, 0);
     return try self.insertInternal(alc, find_res, id, 0);
 }
 
@@ -465,19 +513,19 @@ fn insertInternal(
     inc_up_to: Id,
 ) !Id {
     var final_id = find_res.id;
-    var node = &self.quads.items[find_res.id];
-    if (node.total > quad_limit and find_res.index != null and
-        node.depth != std.math.maxInt(u5))
+    var quad = &self.quads.items[find_res.id];
+    if (quad.total > quad_limit and find_res.index != null and
+        quad.depth != std.math.maxInt(u5))
         final_id = try self.split(alc, find_res, id)
     else
-        try self.slices.push(alc, &node.entities, id);
+        try quad.pushEntity(&self.slices, alc, id);
 
     var cursor = final_id;
-    node = &self.quads.items[cursor];
+    quad = &self.quads.items[cursor];
     while (cursor != inc_up_to) {
-        node.total += 1;
-        cursor = node.parent;
-        node = &self.quads.items[cursor];
+        quad.total += 1;
+        cursor = quad.parent;
+        quad = &self.quads.items[cursor];
     }
 
     return final_id;
@@ -485,16 +533,16 @@ fn insertInternal(
 
 fn removeInternal(self: *QuadTree, quid: Id, id: Slices.Elem, dec_up_to: Id) void {
     var node = &self.quads.items[quid];
-    const view = self.slices.view(node.entities);
+    const view = node.entities(self.slices);
     const index = std.mem.indexOfScalar(Slices.Elem, view, id) orelse std.debug.panic("{any} {any}", .{ view, id });
     std.mem.swap(Slices.Elem, &view[index], &view[view.len - 1]);
-    _ = self.slices.pop(&node.entities).?;
+    _ = node.popEntity(&self.slices);
 
     var cursor = quid;
     while (cursor != dec_up_to) {
         node.total -= 1;
         self.checkCountIntegrity(cursor);
-        if (self.slices.lenOf(node.entities) == node.total) {
+        if (node.count == node.total) {
             self.freeChildren(node.children);
             node.children = invalid_id;
         }
@@ -504,23 +552,21 @@ fn removeInternal(self: *QuadTree, quid: Id, id: Slices.Elem, dec_up_to: Id) voi
 }
 
 fn checkCountIntegrity(self: *QuadTree, from: Id) void {
-    _ = from;
-    _ = self;
-    // const node = self.quads.items[from];
-    // if (node.children != invalid_id) {
-    //     var sum: u32 = self.slices.lenOf(node.entities);
-    //     for (self.quads.items[node.children..][0..4]) |q| sum += q.total;
-    //     if (sum != node.total) std.debug.panic("{any} sum: {any} total: {any}", .{ from, sum, node.total });
-    //     for (node.children..node.children + 4) |c| self.checkCountIntegrity(@intCast(c));
-    // } else {
-    //     if (self.slices.lenOf(node.entities) != node.total) std.debug.panic("{any} total: {any} sum: {any}", .{ from, node.total, self.slices.lenOf(node.entities) });
-    // }
+    const node = self.quads.items[from];
+    if (node.children != invalid_id) {
+        var sum: u32 = node.count;
+        for (self.quads.items[node.children..][0..4]) |q| sum += q.total;
+        if (sum != node.total) std.debug.panic("{any} sum: {any} total: {any}", .{ from, sum, node.total });
+        for (node.children..node.children + 4) |c| self.checkCountIntegrity(@intCast(c));
+    } else {
+        if (node.count != node.total) std.debug.panic("{any} total: {any} sum: {any}", .{ from, node.total, node.count });
+    }
 }
 
 fn split(self: *QuadTree, alc: std.mem.Allocator, find_res: FindResult, id: Slices.Elem) !Id {
     const target = try self.allocChildren(alc, find_res.id) + find_res.index.?;
     const quad = &self.quads.items[target];
-    try self.slices.push(alc, &quad.entities, id);
+    try quad.pushEntity(&self.slices, alc, id);
     return target;
 }
 

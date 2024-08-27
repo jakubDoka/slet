@@ -1,10 +1,9 @@
-// raylib-zig (c) Nikolas Wipper 2023
-
 const std = @import("std");
 const rl = @import("raylib");
 const ecs = @import("ecs.zig");
 const QuadTree = @import("QuadTree.zig");
 const Game = @import("Game.zig");
+//const resources = @import("resources.zig");
 
 pub fn main() !void {
     var alloc = std.heap.GeneralPurposeAllocator(.{}){};
@@ -20,7 +19,7 @@ pub fn main() !void {
     const screenWidth = 800;
     const screenHeight = 600;
 
-    rl.setConfigFlags(rl.ConfigFlags.flag_window_resizable);
+    rl.setConfigFlags(.{ .window_resizable = true });
     rl.setTargetFPS(60);
 
     rl.initWindow(screenWidth, screenHeight, "slet");
@@ -31,4 +30,8 @@ pub fn main() !void {
         try game.input(alc);
         try game.draw(alc);
     }
+}
+
+test {
+    //std.testing.refAllDeclsRecursive(resources);
 }

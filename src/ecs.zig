@@ -2,7 +2,7 @@ const std = @import("std");
 const Type = std.builtin.Type;
 
 const Mask = u64;
-const ArchId = u6;
+const ArchId = u32;
 const TypeId = u32;
 pub const World = @This();
 
@@ -38,6 +38,7 @@ const Archetype = struct {
 
             var size = @sizeOf(Id) * cap;
             for (self.lanes) |lane| {
+                if (lane.meta.size == 0) continue;
                 size += lane.meta.size * cap + lane.meta.alignment - 1;
             }
             return std.math.divCeil(usize, size, @alignOf(Id)) catch unreachable;
@@ -53,6 +54,7 @@ const Archetype = struct {
             cursor += @sizeOf(Id) * new_cap;
 
             for (self.lanes) |*lane| {
+                if (lane.meta.size == 0) continue;
                 cursor = std.mem.alignPointer(cursor, lane.meta.alignment).?;
 
                 @memcpy(
@@ -72,14 +74,13 @@ const Archetype = struct {
         pub fn select(self: *Storage, comptime Q: type) Selector(Q) {
             var selector: Selector(Q) = undefined;
             var i: usize = 0;
-            inline for (std.meta.fields(Q)) |f| {
+            inline for (std.meta.fields(Normalized(Q))) |f| {
                 if (f.type == Id) {
                     @field(selector, f.name) = @alignCast(@ptrCast(self.back_refs));
                     continue;
                 }
                 while (self.lanes[i].type != componentIdOf(f.type)) i += 1;
                 @field(selector, f.name) = @alignCast(@ptrCast(self.lanes[i].data));
-                i += 1;
             }
             return selector;
         }
@@ -108,8 +109,9 @@ const Archetype = struct {
         }
 
         pub fn remove(self: *Storage, index: usize) void {
+            std.debug.assert(index < self.len);
             self.len -= 1;
-            if (self.len == 0) return;
+            if (self.len == index) return;
             self.back_refs[index] = self.back_refs[self.len];
             for (self.lanes) |lane| {
                 const offset = lane.meta.size * index;
@@ -157,6 +159,7 @@ pub const Entity = struct {
             }
         }.cmp).?;
         const lane = self.arch.lanes[index];
+        std.debug.assert(self.arch.len > self.index);
         return @alignCast(@ptrCast(lane.data + self.index * lane.meta.size));
     }
 
@@ -164,7 +167,7 @@ pub const Entity = struct {
         const mask = comptime computeMask(@typeInfo(Q).Struct);
         if (self.mask & mask != mask) return null;
 
-        var selector = staticLanes(@typeInfo(Q).Struct);
+        var selector = staticLanes(@typeInfo(Normalized(Q)).Struct);
         var i: usize = 0;
         for (self.arch.lanes) |lane| {
             if (lane.type == selector[i].type) {
@@ -175,7 +178,11 @@ pub const Entity = struct {
         }
 
         var result: MapStruct(Q, ToPtr) = undefined;
-        inline for (std.meta.fields(Q), 0..) |f, j| {
+        inline for (std.meta.fields(Q)) |f| if (f.type == Id) {
+            @field(result, f.name) = &self.arch.back_refs[self.index];
+        };
+        inline for (std.meta.fields(Normalized(Q)), 0..) |f, j| {
+            if (@sizeOf(f.type) == 0) continue;
             @field(result, f.name) = &@as([*]f.type, @alignCast(@ptrCast(selector[j].data)))[0];
         }
         return result;
@@ -185,8 +192,8 @@ pub const Entity = struct {
 const Slot = struct {
     const Data = union {
         const null_free = std.math.maxInt(u32);
-        const InnerId = packed struct(u32) {
-            index: u26,
+        const InnerId = packed struct {
+            index: u32,
             arch: ArchId,
         };
 
@@ -198,21 +205,14 @@ const Slot = struct {
     version: u32,
 };
 
-const componentIdOf = b: {
-    comptime var types: []const type = &.{};
-    break :b struct {
-        pub fn next(comptime C: type) u32 {
-            std.debug.assert(types.len < 64);
-            const index = comptime for (types, 0..) |t, i| {
-                if (t == C) break i;
-            } else b: {
-                types = types ++ .{C};
-                break :b types.len - 1;
-            };
-            return index;
-        }
-    }.next;
-};
+fn componentIdOf(comptime T: type) u32 {
+    const num = @intFromError(@field(anyerror, @typeName(T)));
+    @compileLog(num);
+    return num;
+}
+
+const max_archetypes = 256;
+const max_components = 64;
 
 archetypes: std.MultiArrayList(Archetype) = .{},
 entities: std.ArrayListUnmanaged(Slot) = .{},
@@ -265,15 +265,15 @@ pub fn exchangeComps(
     id: Id,
     comptime R: type,
     raw_comps: anytype,
-) !?Normalized(R) {
+) !?R {
     const slot = self.accessId(id) catch return null;
     const arch = &self.archetypes.items(.storage)[slot.arch];
     const mask = self.archetypes.items(.mask)[slot.arch];
     const remove_mask = comptime computeMask(@typeInfo(R).Struct);
     const add_mask = comptime computeMask(@typeInfo(@TypeOf(raw_comps)).Struct);
 
-    if (mask & remove_mask != remove_mask) return error.MissingComponent;
-    if (mask & add_mask != 0) return error.ComponentOverlap;
+    if (mask & remove_mask != remove_mask) return null;
+    if (mask & add_mask != 0) return null;
 
     const N = Normalized(@TypeOf(raw_comps));
     var comps = normalize(raw_comps);
@@ -285,7 +285,7 @@ pub fn exchangeComps(
     const NQ = Normalized(R);
     var removed_lanes = staticLanes(@typeInfo(NQ).Struct);
 
-    var buffer: [64]Archetype.Storage.Lane = undefined;
+    var buffer: [max_components]Archetype.Storage.Lane = undefined;
     const lane_count = arch.lanes.len - removed_lanes.len + new_lanes.len;
     const new_mask = mask & ~remove_mask | add_mask;
 
@@ -314,14 +314,16 @@ pub fn exchangeComps(
     };
 
     const new_arch = &self.archetypes.items(.storage)[new_arch_index];
-    slot.* = .{ .index = @intCast(new_arch.len), .arch = new_arch_index };
     try new_arch.dynPush(alc, buffer[i..][0..lane_count], id);
 
-    var result: NQ = undefined;
+    var result: R = undefined;
     inline for (std.meta.fields(NQ), 0..) |f, k| {
         @field(result, f.name) = @as([*]f.type, @alignCast(@ptrCast(removed_lanes[k].data)))[0];
     }
     arch.remove(slot.index);
+    const other_slot = self.accessId(arch.back_refs[slot.index]) catch unreachable;
+    other_slot.index = slot.index;
+    slot.* = .{ .index = @intCast(new_arch.len - 1), .arch = new_arch_index };
 
     return result;
 }
@@ -403,7 +405,11 @@ pub fn Query(comptime Q: type) type {
     return struct {
         const Self = @This();
 
+        const has_id = for (std.meta.fields(Q)) |f| if (f.type == Id) break true else {} else false;
+        const Ids = if (has_id) [*]Id else void;
+
         match_mask: Mask,
+        ids: Ids = undefined,
         selector: Selector(Q) = undefined,
         chunk_len: usize = 0,
         chunk_cursor: usize = 0,
@@ -414,6 +420,10 @@ pub fn Query(comptime Q: type) type {
                 if (self.chunk_cursor != self.chunk_len) {
                     var result: MapStruct(Q, ToPtr) = undefined;
                     inline for (std.meta.fields(Q)) |f| {
+                        if (f.type == Id) {
+                            @field(result, f.name) = &self.ids[self.chunk_cursor];
+                            continue;
+                        }
                         @field(result, f.name) = &@field(self.selector, f.name)[self.chunk_cursor];
                     }
                     self.chunk_cursor += 1;
@@ -426,6 +436,7 @@ pub fn Query(comptime Q: type) type {
 
                 const arch = &self.world.archetypes.items(.storage)[index];
                 self.selector = arch.select(Q);
+                if (has_id) self.ids = arch.back_refs;
                 self.chunk_len = arch.len;
                 self.chunk_cursor = 0;
             }
@@ -495,10 +506,14 @@ fn createArchatypeWithLanes(
     mask: Mask,
     lanes: []Archetype.Storage.Lane,
 ) !ArchId {
+    if (self.archetypes.capacity == 0)
+        try self.archetypes.setCapacity(alc, max_archetypes);
     const arch = self.archetypes.len;
-    try self.archetypes.append(alc, .{ .mask = mask, .storage = .{
-        .lanes = lanes,
-    } });
+    std.debug.assert(arch < max_archetypes);
+    try self.archetypes.append(alc, .{
+        .mask = mask,
+        .storage = .{ .lanes = lanes },
+    });
     return @intCast(arch);
 }
 
@@ -523,7 +538,7 @@ fn freeId(self: *World, id: Id) void {
 }
 
 fn searchMask(masks: []const Mask, mask: Mask) ?usize {
-    const recommended_size = comptime std.simd.suggestVectorSize(Mask) orelse 1;
+    const recommended_size = comptime std.simd.suggestVectorLength(Mask) orelse 1;
     const Vec = @Vector(recommended_size, Mask);
     const Int = std.meta.Int(.unsigned, recommended_size);
 
@@ -548,7 +563,7 @@ fn searchMask(masks: []const Mask, mask: Mask) ?usize {
 }
 
 fn searchSupersets(supersets: []const Mask, subset: Mask) Mask {
-    const recommended_size = comptime std.simd.suggestVectorSize(Mask) orelse 1;
+    const recommended_size = comptime std.simd.suggestVectorLength(Mask) orelse 1;
     const Vec = @Vector(recommended_size, Mask);
     const Int = std.meta.Int(.unsigned, recommended_size);
 
@@ -587,7 +602,7 @@ fn normalize(tuple: anytype) Normalized(@TypeOf(tuple)) {
 }
 
 fn Selector(comptime Q: type) type {
-    return Normalized(MapStruct(Q, ToUnboundPtr));
+    return MapStruct(Normalized(Q), ToUnboundPtr);
 }
 
 fn Normalized(comptime T: type) type {
@@ -595,21 +610,29 @@ fn Normalized(comptime T: type) type {
 
     if (info.fields.len == 0) return T;
 
-    var fields = info.fields[0..info.fields.len].*;
-    for (1..fields.len) |i| for (0..i) |j| {
+    var fields_arr = info.fields[0..info.fields.len].*;
+    var len = fields_arr.len;
+    for (0..fields_arr.len) |i| if (fields_arr[i].type == Id) {
+        fields_arr[i] = fields_arr[len - 1];
+        len -= 1;
+        break;
+    };
+    const fields = fields_arr[0..len];
+
+    for (1..len) |i| for (0..i) |j| {
         if (componentIdOf(fields[i].type) < componentIdOf(fields[j].type))
             std.mem.swap(Type.StructField, &fields[i], &fields[j]);
     };
 
-    for (&fields, 0..) |*field, i| {
+    for (fields, 0..) |*field, i| {
         if (info.is_tuple) {
-            var buffer: [64]u8 = undefined;
-            field.name = std.fmt.bufPrint(&buffer, "{d}", .{i}) catch unreachable;
+            var buffer: [max_components]u8 = undefined;
+            field.name = @ptrCast(std.fmt.bufPrint(&buffer, "{d}", .{i}) catch unreachable);
         }
         field.is_comptime = false;
     }
 
-    info.fields = &fields;
+    info.fields = fields;
     return @Type(.{ .Struct = info });
 }
 
@@ -677,13 +700,13 @@ test {
     try std.testing.expectEqualStrings(iter2.next().?.name.*, "hell");
 
     const removed = try w.removeComps(alc, hell, struct { []const u8 });
-    try std.testing.expectEqualStrings(removed[0], "hell");
+    try std.testing.expectEqualStrings(removed.?[0], "hell");
 
     const exchanged = try w.exchangeComps(alc, hell, struct { foo: u32 }, .{@as([]const u8, "hell")});
-    try std.testing.expectEqual(exchanged.foo, 1);
+    try std.testing.expectEqual(exchanged.?.foo, 1);
 
     const other_exchanged = try w.exchangeComps(alc, hell, struct { name: []const u8 }, .{@as(u32, 2)});
-    try std.testing.expectEqualStrings(other_exchanged.name, "hell");
+    try std.testing.expectEqualStrings(other_exchanged.?.name, "hell");
 
     var ent = w.get(hell).?;
     try std.testing.expectEqual(ent.get(u32).?.*, 2);
