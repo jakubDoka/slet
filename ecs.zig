@@ -534,8 +534,8 @@ pub fn World(comptime Comps: type) type {
         }
 
         fn componentIdOf(Comp: type) u32 {
-            for (@typeInfo(Comps).Struct.decls, 0..) |decl, i| {
-                if (@field(Comps, decl.name) == Comp) return i;
+            return comptime for (@typeInfo(Comps).Struct.decls, 0..) |decl, i| {
+                if (@field(Comps, decl.name) == Comp) break i;
             } else @compileError("unknonwn componenet: " ++ @typeName(Comp));
         }
 
@@ -551,7 +551,7 @@ pub fn World(comptime Comps: type) type {
                 selector: Selector(Q) = undefined,
                 chunk_len: usize = 0,
                 chunk_cursor: usize = 0,
-                world: *Que,
+                world: *Self,
 
                 pub fn next(self: *Que) ?MapStruct(Q, ToPtr) {
                     while (true) {

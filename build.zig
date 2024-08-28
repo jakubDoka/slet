@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     const raylib = raylib_dep.module("raylib");
+    const rlgl = raylib_dep.module("rlgl");
     const raylib_artifact = raylib_dep.artifact("raylib");
 
     const exe = b.addExecutable(.{
@@ -21,6 +22,7 @@ pub fn build(b: *std.Build) !void {
     exe.linkLibC();
     exe.linkLibrary(raylib_artifact);
     exe.root_module.addImport("raylib", raylib);
+    exe.root_module.addImport("rlgl", rlgl);
 
     const runa = b.addRunArtifact(exe);
     const runnner = b.step("run", "run the game");

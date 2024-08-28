@@ -1,7 +1,9 @@
 gpa: std.mem.Allocator,
 world: World = .{},
 player: Id,
+
 player_sprite: rl.Texture2D,
+particle_compute_shader: rl.Shader,
 
 const std = @import("std");
 const rl = @import("raylib");
@@ -12,7 +14,7 @@ const Id = World.Id;
 
 const comps = struct {
     pub const Stats = struct { *const struct {
-        fric: f32 = 0.99,
+        fric: f32 = 0.98,
     } };
     pub const Pos = struct { rl.Vector2 };
     pub const Vel = struct { rl.Vector2 };
@@ -21,8 +23,13 @@ const comps = struct {
 
 pub fn init(gpa: std.mem.Allocator) !Game {
     var world = World{};
+
+    const shaderTxtt = rl.loadFileText("particle_compute.glsl");
+    _ = shaderTxtt; // autofix
+
     return .{
         .player_sprite = rl.loadTexture("player.png"),
+
         .player = try world.create(gpa, .{
             comps.Stats{&.{}},
             comps.Pos{rl.Vector2.init(100, 100)},
@@ -45,9 +52,11 @@ pub fn input(self: *Game) !void {
             pos: comps.Pos,
         }) orelse break :b;
 
-        const acc = 10.0;
-        const trust = rl.getMousePosition().subtract(player.pos[0]).normalize().scale(acc * rl.getFrameTime());
-        player.vel[0] = player.vel[0].add(trust);
+        if (rl.isMouseButtonDown(.mouse_button_left)) {
+            const acc = 700.0;
+            const trust = rl.getMousePosition().subtract(player.pos[0]).normalize().scale(acc * rl.getFrameTime());
+            player.vel[0] = player.vel[0].add(trust);
+        }
     }
 }
 
@@ -60,12 +69,14 @@ pub fn update(self: *Game) !void {
         });
         while (bodies.next()) |ent| {
             ent.vel[0] = ent.vel[0].scale(ent.stats[0].fric);
-            ent.pos[0] = ent.pos[0].add(ent.vel[0]).scale(rl.getFrameTime());
+            ent.pos[0] = ent.pos[0].add(ent.vel[0].scale(rl.getFrameTime()));
         }
     }
 }
 
 pub fn draw(self: *Game) !void {
+    rl.clearBackground(rl.Color.black);
+
     b: {
         const player = self.world.selectOne(self.player, struct { pos: comps.Pos }) orelse break :b;
         const scale = 5.0;
@@ -73,7 +84,7 @@ pub fn draw(self: *Game) !void {
         drawCenteredTexture(self.player_sprite, player.pos[0], dir, scale);
     }
 
-    rl.clearBackground(rl.Color.black);
+    rl.drawFPS(0, 0);
 }
 
 inline fn drawCenteredTexture(texture: rl.Texture2D, pos: rl.Vector2, rot: f32, scale: f32) void {
