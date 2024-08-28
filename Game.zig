@@ -11,9 +11,9 @@ const Game = @This();
 const Id = World.Id;
 
 const comps = struct {
-    pub const Stats = struct {
-        fric: f32 = 0.1,
-    };
+    pub const Stats = struct { *const struct {
+        fric: f32 = 0.99,
+    } };
     pub const Pos = struct { rl.Vector2 };
     pub const Vel = struct { rl.Vector2 };
     pub const Rot = struct { f32 };
@@ -24,7 +24,7 @@ pub fn init(gpa: std.mem.Allocator) !Game {
     return .{
         .player_sprite = rl.loadTexture("player.png"),
         .player = try world.create(gpa, .{
-            comps.Stats{},
+            comps.Stats{&.{}},
             comps.Pos{rl.Vector2.init(100, 100)},
             comps.Vel{rl.Vector2.zero()},
         }),
@@ -38,13 +38,36 @@ pub fn deinit(self: *Game) void {
     rl.unloadTexture(self.player_sprite);
 }
 
+pub fn input(self: *Game) !void {
+    b: {
+        const player = self.world.selectOne(self.player, struct {
+            vel: comps.Vel,
+            pos: comps.Pos,
+        }) orelse break :b;
+
+        const acc = 10.0;
+        const trust = rl.getMousePosition().subtract(player.pos[0]).normalize().scale(acc * rl.getFrameTime());
+        player.vel[0] = player.vel[0].add(trust);
+    }
+}
+
 pub fn update(self: *Game) !void {
-    _ = self; // autofix
+    {
+        var bodies = self.world.select(struct {
+            vel: comps.Vel,
+            pos: comps.Pos,
+            stats: comps.Stats,
+        });
+        while (bodies.next()) |ent| {
+            ent.vel[0] = ent.vel[0].scale(ent.stats[0].fric);
+            ent.pos[0] = ent.pos[0].add(ent.vel[0]).scale(rl.getFrameTime());
+        }
+    }
 }
 
 pub fn draw(self: *Game) !void {
-    {
-        const player = self.world.selectOne(self.player, struct { pos: comps.Pos, vel: comps.Vel }) orelse return;
+    b: {
+        const player = self.world.selectOne(self.player, struct { pos: comps.Pos }) orelse break :b;
         const scale = 5.0;
         const dir = angleOf(rl.getMousePosition().subtract(player.pos[0]));
         drawCenteredTexture(self.player_sprite, player.pos[0], dir, scale);

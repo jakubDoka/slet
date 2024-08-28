@@ -19,6 +19,7 @@ pub fn main() !void {
         rl.beginDrawing();
         defer rl.endDrawing();
 
+        try game.input();
         try game.update();
         try game.draw();
     }
