@@ -58,14 +58,15 @@ pub fn run() !void {
 
     for (0..10) |i| {
         for (0..10) |j| {
+            const pos = .{ 100 * @as(f32, @floatFromInt(i + 1)), 100 * @as(f32, @floatFromInt(j + 1)) };
             _ = try self.world.create(self.gpa, .{
                 comps.Stats{&.{
                     .fric = 1,
                     .size = 40,
                 }},
-                comps.Pos{.{ 100 * @as(f32, @floatFromInt(i + 1)), 100 * @as(f32, @floatFromInt(j + 1)) }},
+                comps.Pos{pos},
                 comps.Vel{vec.zero},
-                comps.Phy{ .quad = 0 },
+                comps.Phy{ .quad = try self.quad.insert(self.gpa, vec.asInt(pos), 15, self.world.nextId().toRaw()) },
             });
         }
     }
@@ -162,6 +163,21 @@ fn update(self: *Game) !void {
     }
 
     {
+        var quds = self.world.select(struct {
+            id: Id,
+            stats: comps.Stats,
+            pos: comps.Pos,
+            vel: comps.Vel,
+            phy: comps.Phy,
+        });
+        while (quds.next()) |qds| {
+            const pos = vec.asInt(qds.pos[0] + qds.vel[0] * vec.splat(0.5));
+            const size: i32 = @intFromFloat(qds.stats[0].size * 2 + vec.len(qds.vel[0]));
+            try self.quad.update(self.gpa, &qds.phy.quad, pos, size, qds.id.toRaw());
+        }
+    }
+
+    {
         const Q = struct {
             id: Id,
             vel: comps.Vel,
@@ -172,10 +188,22 @@ fn update(self: *Game) !void {
         var pbodies = self.world.select(Q);
 
         var collisions = std.ArrayList(struct { a: Id, b: Id, t: f32 }).init(self.arena.allocator());
+        var matches = std.ArrayList(u64).init(self.arena.allocator());
 
         while (pbodies.next()) |pb| {
-            var other_pbodies = pbodies;
-            while (other_pbodies.next()) |opb| {
+            const pos = vec.asInt(pb.pos[0] + pb.vel[0] * vec.splat(0.5));
+            const size: i32 = @intFromFloat(pb.stats[0].size * 2 + vec.len(pb.vel[0]));
+            matches.items.len = 0;
+            try self.quad.query(.{
+                pos[0] - size,
+                pos[1] - size,
+                pos[0] + size,
+                pos[1] + size,
+            }, &matches, 0);
+
+            for (matches.items) |id| {
+                const opb = self.world.selectOne(@bitCast(id), Q).?;
+
                 const g = pb.stats[0].size + opb.stats[0].size;
 
                 const dist = vec.dist2(pb.pos[0], opb.pos[0]);
