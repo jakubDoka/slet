@@ -328,8 +328,8 @@ pub fn World(comptime Comps: type) type {
             return ((try self.removeComps(alc, id, struct { C })) orelse return null)[0];
         }
 
-        pub fn remove(self: *Self, id: Id) !void {
-            const slot = try self.accessId(id);
+        pub fn remove(self: *Self, id: Id) bool {
+            const slot = self.accessId(id) catch return false;
             const arch = &self.archetypes.items(.storage)[slot.arch];
             arch.remove(slot.index);
             const last_id = arch.back_refs[slot.index];
@@ -338,6 +338,7 @@ pub fn World(comptime Comps: type) type {
                 last_slot.index = slot.index;
             }
             self.freeId(id);
+            return true;
         }
 
         fn mergeSortedLanes(
