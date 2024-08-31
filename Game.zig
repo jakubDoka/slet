@@ -1,9 +1,12 @@
 gpa: std.mem.Allocator,
 arena: std.heap.ArenaAllocator,
+stat_arena: std.heap.ArenaAllocator,
+
 world: World = .{},
 quad: Quad,
+
 player: Id,
-player_reload: f64,
+player_reload: f64 = 0.0,
 camera: rl.Camera2D,
 
 player_sprite: rl.Texture2D,
@@ -16,20 +19,23 @@ const rl = @cImport({
 });
 const vec = @import("vec.zig");
 const Vec = vec.T;
-const World = @import("ecs.zig").World(comps);
+const World = @import("ecs.zig").World(cms);
 const Quad = @import("QuadTree.zig");
 const Game = @This();
 const Id = World.Id;
 
-const comps = struct {
-    pub const Stats = struct { *const struct {
-        fric: f32 = 0,
-        size: f32 = 15,
+const Stats = struct {
+    fric: f32 = 0,
+    size: f32 = 15,
+    texture: ?rl.Texture2D = null,
 
-        pub fn mass(self: *const @This()) f32 {
-            return std.math.pow(f32, self.size, 2) * std.math.pi;
-        }
-    } };
+    pub fn mass(self: *const @This()) f32 {
+        return std.math.pow(f32, self.size, 2) * std.math.pi;
+    }
+};
+
+const cms = struct {
+    pub const Stt = struct { *const Stats };
     pub const Pos = struct { Vec };
     pub const Vel = struct { Vec };
     pub const Rot = struct { f32 };
@@ -47,7 +53,7 @@ const Particle = extern struct {
 const max_particles = 64;
 
 pub fn run() !void {
-    //rl.SetTargetFPS(360);
+    rl.SetTargetFPS(60);
 
     rl.InitWindow(800, 600, "slet");
     defer rl.CloseWindow();
@@ -57,20 +63,20 @@ pub fn run() !void {
     var self = try Game.init(alloc.allocator());
     defer self.deinit();
 
-    //for (0..10) |i| {
-    //    for (0..100) |j| {
-    //        const pos = .{ 4 * @as(f32, @floatFromInt(i + 100)), 4 * @as(f32, @floatFromInt(j + 100)) };
-    //        _ = try self.world.create(self.gpa, .{
-    //            comps.Stats{&.{
-    //                .fric = 1,
-    //                .size = 2,
-    //            }},
-    //            comps.Pos{pos},
-    //            comps.Vel{vec.zero},
-    //            comps.Phy{ .quad = try self.quad.insert(self.gpa, vec.asInt(pos), 15, self.world.nextId().toRaw()) },
-    //        });
-    //    }
-    //}
+    for (0..2) |i| {
+        for (0..2) |j| {
+            const pos = .{ 100 * @as(f32, @floatFromInt(i + 1)), 100 * @as(f32, @floatFromInt(j + 1)) };
+            _ = try self.world.create(self.gpa, .{
+                cms.Stt{&.{
+                    .fric = 1,
+                    .size = 30,
+                }},
+                cms.Pos{pos},
+                cms.Vel{vec.zero},
+                cms.Phy{ .quad = try self.quad.insert(self.gpa, vec.asInt(pos), 15, self.world.nextId().toRaw()) },
+            });
+        }
+    }
 
     while (!rl.WindowShouldClose()) {
         std.debug.assert(self.arena.reset(.retain_capacity));
@@ -87,39 +93,53 @@ pub fn run() !void {
 fn init(gpa: std.mem.Allocator) !Game {
     var world = World{};
     var quad = try Quad.init(gpa, 20);
+    var stat_arena = std.heap.ArenaAllocator.init(gpa);
+    const player_sprite = rl.LoadTexture("assets/player.png");
+
+    const stats = try stat_arena.allocator().create(Stats);
+    stats.* = .{ .fric = 1, .texture = player_sprite };
 
     return .{
-        .player_sprite = rl.LoadTexture("assets/player.png"),
+        .player_sprite = player_sprite,
 
         .player = try world.create(gpa, .{
-            comps.Stats{&.{ .fric = 1 }},
-            comps.Pos{.{ 0, 0 }},
-            comps.Vel{vec.zero},
-            comps.Phy{ .quad = try quad.insert(gpa, .{ 0, 0 }, 15, world.nextId().toRaw()) },
+            cms.Stt{stats},
+            cms.Pos{.{ 0, 0 }},
+            cms.Vel{vec.zero},
+            cms.Phy{ .quad = try quad.insert(gpa, .{ 0, 0 }, 15, world.nextId().toRaw()) },
         }),
         .camera = rl.Camera2D{ .zoom = 1.0, .offset = .{ .x = 400, .y = 300 } },
 
         .gpa = gpa,
         .arena = std.heap.ArenaAllocator.init(gpa),
+        .stat_arena = stat_arena,
         .world = world,
         .quad = quad,
     };
 }
 
 fn deinit(self: *Game) void {
+    self.arena.deinit();
+    self.stat_arena.deinit();
+
     self.world.deinit(self.gpa);
     self.quad.deinit(self.gpa);
-    self.arena.deinit();
+
     rl.UnloadTexture(self.player_sprite);
+}
+
+fn createStats(self: *Game, stats: Stats) !cms.Stt {
+    const alloc = try self.stat_arena.allocator().create(Stats);
+    alloc.* = stats;
+    return cms.Stt{alloc};
 }
 
 fn input(self: *Game) !void {
     b: {
-        const player = self.world.selectOne(self.player, struct {
-            stats: comps.Stats,
-            vel: comps.Vel,
-            pos: comps.Pos,
-        }) orelse break :b;
+        const player = self.world.selectOne(
+            self.player,
+            struct { cms.Stt, cms.Vel, cms.Pos },
+        ) orelse break :b;
 
         const face = vec.norm(self.mousePos() - player.pos[0]);
 
@@ -130,15 +150,15 @@ fn input(self: *Game) !void {
         }
 
         if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT) and self.player_reload < rl.GetTime()) {
-            self.player_reload += 0.5;
-            const pos = face * vec.splat(player.stats[0].size + 10) + player.pos[0];
-            const vel = face * vec.splat(2000);
+            self.player_reload = rl.GetTime() + 0.5;
+            const pos = face * vec.splat(player.stt[0].size + 10) + player.pos[0];
+            const vel = face * vec.splat(1000);
             _ = try self.world.create(self.gpa, .{
-                comps.Stats{&.{ .fric = 2, .size = 5 }},
-                comps.Pos{pos},
-                comps.Vel{vel},
-                comps.Phy{ .quad = try self.quad.insert(self.gpa, vec.asInt(pos), 3, self.world.nextId().toRaw()) },
-                comps.Tmp{@floatCast(rl.GetTime() + 1)},
+                cms.Stt{&.{ .fric = 0.5, .size = 4 }},
+                cms.Pos{pos},
+                cms.Vel{vel},
+                cms.Phy{ .quad = try self.quad.insert(self.gpa, vec.asInt(pos), 3, self.world.nextId().toRaw()) },
+                cms.Tmp{@floatCast(rl.GetTime() + 2)},
             });
         }
 
@@ -159,64 +179,47 @@ fn update(self: *Game) !void {
 
     {
         var to_delete = std.ArrayList(Id).init(self.arena.allocator());
-        var tmps = self.world.select(struct { tmp: comps.Tmp, id: Id });
+        var tmps = self.world.select(struct { cms.Tmp, Id });
         while (tmps.next()) |pb| {
             if (pb.tmp[0] < rl.GetTime()) try to_delete.append(pb.id.*);
         }
         for (to_delete.items) |id| {
-            if (self.world.selectOne(id, struct { phy: comps.Phy })) |n|
+            if (self.world.selectOne(id, struct { cms.Phy })) |n|
                 self.quad.remove(n.phy.quad, @bitCast(id));
             std.debug.assert(self.world.remove(id));
         }
     }
 
     {
-        var quds = self.world.select(struct {
-            id: Id,
-            stats: comps.Stats,
-            pos: comps.Pos,
-            vel: comps.Vel,
-            phy: comps.Phy,
-        });
+        var quds = self.world.select(struct { Id, cms.Stt, cms.Pos, cms.Vel, cms.Phy });
         while (quds.next()) |qds| {
             const pos = vec.asInt(qds.pos[0] + qds.vel[0] * vec.splat(0.5));
-            const size: i32 = @intFromFloat(qds.stats[0].size * 2 + vec.len(qds.vel[0]));
+            const size: i32 = @intFromFloat(qds.stt[0].size * 2 + vec.len(qds.vel[0]));
             try self.quad.update(self.gpa, &qds.phy.quad, pos, size, qds.id.toRaw());
         }
     }
 
     {
-        const Q = struct {
-            id: Id,
-            vel: comps.Vel,
-            pos: comps.Pos,
-            stats: comps.Stats,
-            phy: comps.Phy,
-        };
+        const Q = struct { Id, cms.Vel, cms.Pos, cms.Stt, cms.Phy };
         var pbodies = self.world.select(Q);
 
         var collisions = std.ArrayList(struct { a: Id, b: Id, t: f32 }).init(self.arena.allocator());
 
         while (pbodies.next()) |pb| {
             const pos = vec.asInt(pb.pos[0] + pb.vel[0] * vec.splat(0.5));
-            const size: i32 = @intFromFloat(pb.stats[0].size * 2 + vec.len(pb.vel[0]));
+            const size: i32 = @intFromFloat(pb.stt[0].size * 2 + vec.len(pb.vel[0]));
+            const bb = .{ pos[0] - size, pos[1] - size, pos[0] + size, pos[1] + size };
 
-            var query = self.quad.queryIter(.{
-                pos[0] - size,
-                pos[1] - size,
-                pos[0] + size,
-                pos[1] + size,
-            }, pb.phy.quad);
-
+            var query = self.quad.queryIter(bb, pb.phy.quad);
             while (query.next()) |qid| for (self.quad.entities(qid)) |id| {
                 if (id == @as(u64, @bitCast(pb.id.*))) continue;
                 const opb = self.world.selectOne(@bitCast(id), Q).?;
 
-                const g = pb.stats[0].size + opb.stats[0].size;
+                const g = pb.stt[0].size + opb.stt[0].size;
 
                 const dist = vec.dist2(pb.pos[0], opb.pos[0]);
                 if (g * g > dist) {
-                    if (pb.stats[0].size > opb.stats[0].size) {
+                    if (pb.stt[0].size > opb.stt[0].size) {
                         opb.pos[0] = pb.pos[0] + vec.norm(opb.pos[0] - pb.pos[0]) * vec.splat(g);
                     } else {
                         pb.pos[0] = opb.pos[0] + vec.norm(pb.pos[0] - opb.pos[0]) * vec.splat(g);
@@ -267,8 +270,8 @@ fn update(self: *Game) !void {
 
             const dist = vec.dist(pb.pos[0], opb.pos[0]);
 
-            const mass = pb.stats[0].mass();
-            const amass = opb.stats[0].mass();
+            const mass = pb.stt[0].mass();
+            const amass = opb.stt[0].mass();
 
             const norm = (opb.pos[0] - pb.pos[0]) / vec.splat(dist);
             const p = 2 * (vec.dot(pb.vel[0], norm) - vec.dot(opb.vel[0], norm)) / (mass + amass);
@@ -284,26 +287,12 @@ fn update(self: *Game) !void {
     }
 
     {
-        var bodies = self.world.select(struct {
-            vel: comps.Vel,
-            pos: comps.Pos,
-            stats: comps.Stats,
-        });
+        var bodies = self.world.select(struct { cms.Vel, cms.Pos, cms.Stt });
         while (bodies.next()) |ent| {
             ent.pos[0] += ent.vel[0] * vec.splat(delta);
-            ent.vel[0] *= vec.splat(1 - ent.stats[0].fric * delta);
+            ent.vel[0] *= vec.splat(1 - ent.stt[0].fric * delta);
         }
     }
-}
-
-fn closestPointOnLine(l1: Vec, l2: Vec, p: Vec) Vec {
-    const a = l2[1] - l1[1];
-    const b = l1[0] - l2[0];
-    const c1 = a * l1[0] + b * l1[1];
-    const c2 = -b * p[0] + a * p[1];
-    const det = a * a + b * b;
-    if (det == 0) return p;
-    return .{ (a * c1 - b * c2) / det, (a * c2 - -b * c1) / det };
 }
 
 fn draw(self: *Game) !void {
@@ -313,7 +302,7 @@ fn draw(self: *Game) !void {
 
     rl.DrawLine(0, 0, 0, 10000, rl.WHITE);
 
-    const player = self.world.selectOne(self.player, struct { pos: comps.Pos }) orelse return;
+    const player = self.world.selectOne(self.player, struct { cms.Pos }) orelse return;
     {
         const scale = 5.0;
         const dir = vec.ang(self.mousePos() - player.pos[0]);
@@ -327,12 +316,8 @@ fn draw(self: *Game) !void {
 
     var iter = self.quad.queryIter(bounds, 0);
     while (iter.next()) |quid| for (self.quad.entities(quid)) |id| {
-        const pb = self.world.selectOne(@bitCast(id), struct {
-            pos: comps.Pos,
-            stats: comps.Stats,
-            phy: comps.Phy,
-        }).?;
-        rl.DrawCircleV(vec.asRl(pb.pos[0]), pb.stats[0].size, rl.RED);
+        const pb = self.world.selectOne(@bitCast(id), struct { cms.Pos, cms.Stt, cms.Phy }).?;
+        rl.DrawCircleV(vec.asRl(pb.pos[0]), pb.stt[0].size, rl.RED);
     };
 
     rl.EndMode2D();

@@ -362,7 +362,7 @@ pub fn World(comptime Comps: type) type {
             }
         }
 
-        pub fn select(self: *Self, comptime Q: type) Query(Q) {
+        pub fn select(self: *Self, comptime Q: type) Query(ExpandQuery(Q)) {
             const mask = comptime computeMask(@typeInfo(Q).Struct);
             const matches = searchSupersets(self.archetypes.items(.mask), mask);
 
@@ -372,9 +372,33 @@ pub fn World(comptime Comps: type) type {
             };
         }
 
-        pub fn selectOne(self: *Self, id: Id, comptime Q: type) ?MapStruct(Q, ToPtr) {
+        pub fn selectOne(self: *Self, id: Id, comptime Q: type) ?MapStruct(ExpandQuery(Q), ToPtr) {
+            const EQ = ExpandQuery(Q);
             const ent = self.get(id) orelse return null;
-            return ent.select(Q);
+            return ent.select(EQ);
+        }
+
+        fn ExpandQuery(Q: type) type {
+            var info = @typeInfo(Q).Struct;
+            const comp_decls = @typeInfo(Comps).Struct.decls;
+            if (!info.is_tuple) return Q;
+
+            var fields = info.fields[0..info.fields.len].*;
+            for (&fields) |*field| {
+                if (field.type == Id) {
+                    field.name = "id";
+                } else {
+                    const name = comp_decls[componentIdOf(field.type)].name;
+                    var arr = name[0..name.len].*;
+                    for (&arr) |*c| c.* = std.ascii.toLower(c.*);
+                    field.name = &arr;
+                }
+            }
+
+            info.is_tuple = false;
+            info.fields = &fields;
+
+            return @Type(.{ .Struct = info });
         }
 
         fn findArchetype(self: *Self, mask: Mask) ?ArchId {
