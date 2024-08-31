@@ -91,82 +91,75 @@ pub fn deinit(self: *QuadTree, alc: std.mem.Allocator) void {
     self.free = undefined;
 }
 
-pub fn queryRec(
-    self: *QuadTree,
-    bounds: [4]i32,
-    buffer: *std.ArrayList(Slices.Elem),
-    from: Id,
-) !void {
-    const quad = self.quads.items[from];
-    const radius = self.radius >> quad.depth;
-    const cx = quad.pos[0];
-    const cy = quad.pos[1];
-    const tx = bounds[0];
-    const ty = bounds[1];
-    const bx = bounds[2];
-    const by = bounds[3];
-
-    if (tx > cx + radius or
-        bx < cx - radius or
-        ty > cy + radius or
-        by < cy - radius) return;
-
-    try buffer.appendSlice(quad.entities(self.slices));
-
-    if (quad.children == invalid_id) return;
-
-    for (quad.children..quad.children + 4) |c|
-        try self.queryRec(bounds, buffer, @intCast(c));
+pub fn entities(self: *const QuadTree, id: Id) []const Slices.Elem {
+    return self.quads.items[id].entities(self.slices);
 }
 
-pub fn query(
-    self: *QuadTree,
+pub const Query = struct {
+    quad: *QuadTree,
     bounds: [4]i32,
-    buffer: *std.ArrayList(Slices.Elem),
-) !void {
-    const tx = bounds[0];
-    const ty = bounds[1];
-    const bx = bounds[2];
-    const by = bounds[3];
-    const root = self.quads.items[0];
+    cursor: Id,
+    from: Id,
+    state: State = .diving,
 
-    try buffer.appendSlice(root.entities(self.slices));
+    const State = enum {
+        diving,
+        diving_advance_oob,
+        diving_advance,
+        returning,
+    };
 
-    if (root.children == invalid_id) return;
+    pub fn next(self: *Query) ?Id {
+        while (true) switch (self.state) {
+            .diving => {
+                const quad = self.quad.quads.items[self.cursor];
+                const radius = self.quad.radius >> quad.depth;
+                const cx = quad.pos[0];
+                const cy = quad.pos[1];
 
-    var cursor = root.children;
-    var radius = self.radius >> 1;
-
-    o: for (0..self.quads.items.len) |_| {
-        var quad = self.quads.items[cursor];
-        const cx = quad.pos[0];
-        const cy = quad.pos[1];
-
-        const oob = tx > cx + radius or bx < cx - radius or
-            ty > cy + radius or by < cy - radius;
-
-        if (!oob) try buffer.appendSlice(quad.entities(self.slices));
-        if (quad.children == invalid_id or oob) {
-            while (cursor & 3 == 0) {
-                cursor = quad.parent;
-                quad = self.quads.items[cursor];
-                if (cursor == 0) break :o;
-                radius <<= 1;
-                std.debug.assert(radius <= self.radius);
-            }
-            cursor += 1;
-        } else {
-            cursor = quad.children;
-            radius >>= 1;
-        }
-    } else unreachable;
-
-    if (debug and false) {
-        const prev_len = buffer.items.len;
-        try self.queryRec(bounds, buffer, 0);
-        std.debug.assert(buffer.items.len == prev_len * 2);
-        buffer.items.len = prev_len;
+                const oob = self.bounds[0] > cx + radius or self.bounds[2] < cx - radius or
+                    self.bounds[1] > cy + radius or self.bounds[3] < cy - radius;
+                if (!oob) {
+                    self.state = .diving_advance;
+                    return self.cursor;
+                }
+                self.state = .diving_advance_oob;
+            },
+            .diving_advance, .diving_advance_oob => self.state =
+                if (self.advance(self.state != .diving_advance)) .diving else .returning,
+            .returning => if (self.from != invalid_id) {
+                const ret = self.from;
+                self.from = self.quad.quads.items[ret].parent;
+                return ret;
+            } else return null,
+        };
     }
+
+    fn advance(self: *Query, oob: bool) bool {
+        var quad = self.quad.quads.items[self.cursor];
+        if (quad.children == invalid_id or oob) {
+            if (self.cursor == self.from) return false;
+            while (self.cursor & 3 == 0) {
+                self.cursor = quad.parent;
+                if (self.cursor == self.from) return false;
+                quad = self.quad.quads.items[self.cursor];
+            }
+            self.cursor += 1;
+        } else {
+            self.cursor = quad.children;
+        }
+        return true;
+    }
+};
+
+pub fn queryIter(self: *QuadTree, bounds: [4]i32, from: Id) Query {
+    return .{
+        .quad = self,
+        .bounds = bounds,
+        .cursor = self.quads.items[from].children,
+        .from = from,
+        .state = if (self.quads.items[from].children == invalid_id) .returning else .diving,
+    };
 }
 
 pub fn insert(

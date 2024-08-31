@@ -3,6 +3,7 @@ arena: std.heap.ArenaAllocator,
 world: World = .{},
 quad: Quad,
 player: Id,
+player_reload: f64,
 camera: rl.Camera2D,
 
 player_sprite: rl.Texture2D,
@@ -46,7 +47,7 @@ const Particle = extern struct {
 const max_particles = 64;
 
 pub fn run() !void {
-    rl.SetTargetFPS(360);
+    //rl.SetTargetFPS(360);
 
     rl.InitWindow(800, 600, "slet");
     defer rl.CloseWindow();
@@ -56,20 +57,20 @@ pub fn run() !void {
     var self = try Game.init(alloc.allocator());
     defer self.deinit();
 
-    for (0..100) |i| {
-        for (0..100) |j| {
-            const pos = .{ 20 * @as(f32, @floatFromInt(i + 1)), 20 * @as(f32, @floatFromInt(j + 1)) };
-            _ = try self.world.create(self.gpa, .{
-                comps.Stats{&.{
-                    .fric = 1,
-                    .size = 1,
-                }},
-                comps.Pos{pos},
-                comps.Vel{vec.zero},
-                comps.Phy{ .quad = try self.quad.insert(self.gpa, vec.asInt(pos), 15, self.world.nextId().toRaw()) },
-            });
-        }
-    }
+    //for (0..10) |i| {
+    //    for (0..100) |j| {
+    //        const pos = .{ 4 * @as(f32, @floatFromInt(i + 100)), 4 * @as(f32, @floatFromInt(j + 100)) };
+    //        _ = try self.world.create(self.gpa, .{
+    //            comps.Stats{&.{
+    //                .fric = 1,
+    //                .size = 2,
+    //            }},
+    //            comps.Pos{pos},
+    //            comps.Vel{vec.zero},
+    //            comps.Phy{ .quad = try self.quad.insert(self.gpa, vec.asInt(pos), 15, self.world.nextId().toRaw()) },
+    //        });
+    //    }
+    //}
 
     while (!rl.WindowShouldClose()) {
         std.debug.assert(self.arena.reset(.retain_capacity));
@@ -128,15 +129,16 @@ fn input(self: *Game) !void {
             player.vel[0] += trust;
         }
 
-        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT)) {
-            const pos = face * -vec.splat(player.stats[0].size + 10) + player.pos[0];
-            const vel = face * -vec.splat(1000);
+        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT) and self.player_reload < rl.GetTime()) {
+            self.player_reload += 0.5;
+            const pos = face * vec.splat(player.stats[0].size + 10) + player.pos[0];
+            const vel = face * vec.splat(2000);
             _ = try self.world.create(self.gpa, .{
-                comps.Stats{&.{ .fric = 5, .size = 3 }},
+                comps.Stats{&.{ .fric = 2, .size = 5 }},
                 comps.Pos{pos},
                 comps.Vel{vel},
                 comps.Phy{ .quad = try self.quad.insert(self.gpa, vec.asInt(pos), 3, self.world.nextId().toRaw()) },
-                comps.Tmp{@floatCast(rl.GetTime() + 10)},
+                comps.Tmp{@floatCast(rl.GetTime() + 1)},
             });
         }
 
@@ -194,20 +196,19 @@ fn update(self: *Game) !void {
         var pbodies = self.world.select(Q);
 
         var collisions = std.ArrayList(struct { a: Id, b: Id, t: f32 }).init(self.arena.allocator());
-        var matches = std.ArrayList(u64).init(self.arena.allocator());
 
         while (pbodies.next()) |pb| {
             const pos = vec.asInt(pb.pos[0] + pb.vel[0] * vec.splat(0.5));
             const size: i32 = @intFromFloat(pb.stats[0].size * 2 + vec.len(pb.vel[0]));
-            matches.items.len = 0;
-            try self.quad.query(.{
+
+            var query = self.quad.queryIter(.{
                 pos[0] - size,
                 pos[1] - size,
                 pos[0] + size,
                 pos[1] + size,
-            }, &matches);
+            }, pb.phy.quad);
 
-            for (matches.items) |id| {
+            while (query.next()) |qid| for (self.quad.entities(qid)) |id| {
                 if (id == @as(u64, @bitCast(pb.id.*))) continue;
                 const opb = self.world.selectOne(@bitCast(id), Q).?;
 
@@ -249,7 +250,7 @@ fn update(self: *Game) !void {
                 pb.phy.coll_id = @intCast(collisions.items.len);
                 opb.phy.coll_id = @intCast(collisions.items.len);
                 try collisions.append(.{ .a = pb.id.*, .b = opb.id.*, .t = t });
-            }
+            };
         }
 
         for (collisions.items) |col| {
@@ -312,23 +313,27 @@ fn draw(self: *Game) !void {
 
     rl.DrawLine(0, 0, 0, 10000, rl.WHITE);
 
-    b: {
-        const player = self.world.selectOne(self.player, struct { pos: comps.Pos }) orelse break :b;
+    const player = self.world.selectOne(self.player, struct { pos: comps.Pos }) orelse return;
+    {
         const scale = 5.0;
         const dir = vec.ang(self.mousePos() - player.pos[0]);
         drawCenteredTexture(self.player_sprite, player.pos[0], dir, scale);
     }
 
-    if (false) {
-        var pbodies = self.world.select(struct {
+    const width = @divFloor(rl.GetScreenWidth(), 2);
+    const height = @divFloor(rl.GetScreenHeight(), 2);
+    const cx, const cy = vec.asInt(player.pos[0]);
+    const bounds: [4]i32 = .{ cx - width, cy - height, cx + width, cy + height };
+
+    var iter = self.quad.queryIter(bounds, 0);
+    while (iter.next()) |quid| for (self.quad.entities(quid)) |id| {
+        const pb = self.world.selectOne(@bitCast(id), struct {
             pos: comps.Pos,
             stats: comps.Stats,
             phy: comps.Phy,
-        });
-        while (pbodies.next()) |pb| {
-            rl.DrawCircleV(vec.asRl(pb.pos[0]), pb.stats[0].size, rl.RED);
-        }
-    }
+        }).?;
+        rl.DrawCircleV(vec.asRl(pb.pos[0]), pb.stats[0].size, rl.RED);
+    };
 
     rl.EndMode2D();
 

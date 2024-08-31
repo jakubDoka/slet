@@ -161,12 +161,8 @@ pub fn World(comptime Comps: type) type {
 
             pub fn get(self: *const Entity, comptime C: type) ?*C {
                 if (!self.has(C)) return null;
-                const tid = componentIdOf(C);
-                const index = std.sort.binarySearch(Storage.Lane, tid, self.arch.lanes, {}, struct {
-                    pub fn cmp(_: void, mid: u32, b: Storage.Lane) std.math.Order {
-                        return std.math.order(mid, b.type);
-                    }
-                }.cmp).?;
+                const tid = comptime componentIdOf(C);
+                const index = @popCount(self.mask & ((@as(Mask, 1) << tid) - 1));
                 const lane = self.arch.lanes[index];
                 std.debug.assert(self.arch.len > self.index);
                 return &@as([*]C, @alignCast(@ptrCast(lane.data)))[self.index];
@@ -175,17 +171,6 @@ pub fn World(comptime Comps: type) type {
             pub fn select(self: *const Entity, comptime Q: type) ?MapStruct(Q, ToPtr) {
                 const mask = comptime computeMask(@typeInfo(Q).Struct);
                 if (self.mask & mask != mask) return null;
-
-                //var selector = comptime staticLanes(@typeInfo(Normalized(Q)).Struct);
-                //var i: usize = 0;
-                //for (self.arch.lanes, 0..) |lane, j| {
-                //    _ = j; // autofix
-                //    if (lane.type == selector[i].type) {
-                //        selector[i].data = lane.data;
-                //        i += 1;
-                //        if (i == selector.len) break;
-                //    }
-                //}
 
                 var result: MapStruct(Q, ToPtr) = undefined;
                 inline for (std.meta.fields(Q)) |f| if (f.type == Id) {
