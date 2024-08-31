@@ -2,7 +2,7 @@ const std = @import("std");
 const Type = std.builtin.Type;
 const Mask = u64;
 const ArchId = u32;
-const TypeId = u32;
+const TypeId = u6;
 
 const max_archetypes = 256;
 const max_components = 64;
@@ -48,8 +48,8 @@ pub fn World(comptime Comps: type) type {
 
             back_refs: [*]Id = @ptrFromInt(@alignOf(Id)),
             lanes: []Lane = undefined,
-            len: usize = 0,
-            cap: usize = 0,
+            len: u32 = 0,
+            cap: u32 = 0,
 
             pub fn deinit(self: *Storage, alc: std.mem.Allocator) void {
                 alc.free(self.back_refs[0..self.sizeForCap(self.cap)]);
@@ -91,7 +91,7 @@ pub fn World(comptime Comps: type) type {
 
                 alc.free(self.back_refs[0..self.sizeForCap(self.cap)]);
                 self.back_refs = back_refs.ptr;
-                self.cap = new_cap;
+                self.cap = @intCast(new_cap);
             }
 
             pub fn select(self: *Storage, comptime Q: type) Selector(Q) {
@@ -113,8 +113,7 @@ pub fn World(comptime Comps: type) type {
                 self.back_refs[self.len] = id;
                 inline for (std.meta.fields(@TypeOf(init)), 0..) |field, i| {
                     const lane = &self.lanes[i];
-                    const offset = lane.meta.size * self.len;
-                    @as(*field.type, @alignCast(@ptrCast(&lane.data[offset]))).* = init[i];
+                    @as([*]field.type, @alignCast(@ptrCast(lane.data)))[self.len] = init[i];
                 }
                 self.len += 1;
             }
@@ -170,30 +169,32 @@ pub fn World(comptime Comps: type) type {
                 }.cmp).?;
                 const lane = self.arch.lanes[index];
                 std.debug.assert(self.arch.len > self.index);
-                return @alignCast(@ptrCast(lane.data + self.index * lane.meta.size));
+                return &@as([*]C, @alignCast(@ptrCast(lane.data)))[self.index];
             }
 
             pub fn select(self: *const Entity, comptime Q: type) ?MapStruct(Q, ToPtr) {
                 const mask = comptime computeMask(@typeInfo(Q).Struct);
                 if (self.mask & mask != mask) return null;
 
-                var selector = staticLanes(@typeInfo(Normalized(Q)).Struct);
-                var i: usize = 0;
-                for (self.arch.lanes) |lane| {
-                    if (lane.type == selector[i].type) {
-                        selector[i].data = lane.data + self.index * lane.meta.size;
-                        i += 1;
-                        if (i == selector.len) break;
-                    }
-                }
+                //var selector = comptime staticLanes(@typeInfo(Normalized(Q)).Struct);
+                //var i: usize = 0;
+                //for (self.arch.lanes, 0..) |lane, j| {
+                //    _ = j; // autofix
+                //    if (lane.type == selector[i].type) {
+                //        selector[i].data = lane.data;
+                //        i += 1;
+                //        if (i == selector.len) break;
+                //    }
+                //}
 
                 var result: MapStruct(Q, ToPtr) = undefined;
                 inline for (std.meta.fields(Q)) |f| if (f.type == Id) {
                     @field(result, f.name) = &self.arch.back_refs[self.index];
                 };
-                inline for (std.meta.fields(Normalized(Q)), 0..) |f, j| {
+                inline for (std.meta.fields(Normalized(Q))) |f| {
                     if (@sizeOf(f.type) == 0) continue;
-                    @field(result, f.name) = &@as([*]f.type, @alignCast(@ptrCast(selector[j].data)))[0];
+                    const i = @popCount(self.mask & ((@as(Mask, 1) << comptime componentIdOf(f.type)) - 1));
+                    @field(result, f.name) = &@as([*]f.type, @alignCast(@ptrCast(self.arch.lanes[i].data)))[self.index];
                 }
                 return result;
             }
@@ -257,13 +258,13 @@ pub fn World(comptime Comps: type) type {
 
             const N = Normalized(@TypeOf(raw_comps));
             var comps = normalize(raw_comps);
-            var new_lanes = staticLanes(@typeInfo(N).Struct);
+            var new_lanes = comptime staticLanes(@typeInfo(N).Struct);
             inline for (0..@typeInfo(N).Struct.fields.len) |i| {
                 new_lanes[i].data = @ptrCast(&comps[i]);
             }
 
             const NQ = Normalized(R);
-            var removed_lanes = staticLanes(@typeInfo(NQ).Struct);
+            var removed_lanes = comptime staticLanes(@typeInfo(NQ).Struct);
 
             var buffer: [max_components]Storage.Lane = undefined;
             const lane_count = arch.lanes.len - removed_lanes.len + new_lanes.len;
@@ -402,18 +403,16 @@ pub fn World(comptime Comps: type) type {
             comptime info: std.builtin.Type.Struct,
         ) !ArchId {
             const lanes = try self.allocLanes(alc, info.fields.len);
-            const static_lanes = staticLanes(info);
+            const static_lanes = comptime staticLanes(info);
             @memcpy(lanes, &static_lanes);
             return createArchatypeWithLanes(self, alc, mask, lanes);
         }
 
-        fn staticLanes(
-            comptime info: std.builtin.Type.Struct,
-        ) [info.fields.len]Storage.Lane {
+        fn staticLanes(info: std.builtin.Type.Struct) [info.fields.len]Storage.Lane {
             var lanes: [info.fields.len]Storage.Lane = undefined;
-            inline for (&lanes, info.fields) |*lane, field| {
+            for (&lanes, info.fields) |*lane, field| {
                 lane.* = .{
-                    .type = comptime componentIdOf(field.type),
+                    .type = componentIdOf(field.type),
                     .meta = TypeMeta.fromType(field.type),
                     .data = undefined,
                 };

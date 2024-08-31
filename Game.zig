@@ -56,13 +56,13 @@ pub fn run() !void {
     var self = try Game.init(alloc.allocator());
     defer self.deinit();
 
-    for (0..10) |i| {
-        for (0..10) |j| {
-            const pos = .{ 100 * @as(f32, @floatFromInt(i + 1)), 100 * @as(f32, @floatFromInt(j + 1)) };
+    for (0..100) |i| {
+        for (0..100) |j| {
+            const pos = .{ 20 * @as(f32, @floatFromInt(i + 1)), 20 * @as(f32, @floatFromInt(j + 1)) };
             _ = try self.world.create(self.gpa, .{
                 comps.Stats{&.{
                     .fric = 1,
-                    .size = 40,
+                    .size = 1,
                 }},
                 comps.Pos{pos},
                 comps.Vel{vec.zero},
@@ -85,7 +85,7 @@ pub fn run() !void {
 
 fn init(gpa: std.mem.Allocator) !Game {
     var world = World{};
-    var quad = try Quad.init(gpa, 10000);
+    var quad = try Quad.init(gpa, 20);
 
     return .{
         .player_sprite = rl.LoadTexture("assets/player.png"),
@@ -107,6 +107,8 @@ fn init(gpa: std.mem.Allocator) !Game {
 
 fn deinit(self: *Game) void {
     self.world.deinit(self.gpa);
+    self.quad.deinit(self.gpa);
+    self.arena.deinit();
     rl.UnloadTexture(self.player_sprite);
 }
 
@@ -159,7 +161,11 @@ fn update(self: *Game) !void {
         while (tmps.next()) |pb| {
             if (pb.tmp[0] < rl.GetTime()) try to_delete.append(pb.id.*);
         }
-        for (to_delete.items) |id| std.debug.assert(self.world.remove(id));
+        for (to_delete.items) |id| {
+            if (self.world.selectOne(id, struct { phy: comps.Phy })) |n|
+                self.quad.remove(n.phy.quad, @bitCast(id));
+            std.debug.assert(self.world.remove(id));
+        }
     }
 
     {
@@ -199,9 +205,10 @@ fn update(self: *Game) !void {
                 pos[1] - size,
                 pos[0] + size,
                 pos[1] + size,
-            }, &matches, 0);
+            }, &matches);
 
             for (matches.items) |id| {
+                if (id == @as(u64, @bitCast(pb.id.*))) continue;
                 const opb = self.world.selectOne(@bitCast(id), Q).?;
 
                 const g = pb.stats[0].size + opb.stats[0].size;
@@ -312,7 +319,7 @@ fn draw(self: *Game) !void {
         drawCenteredTexture(self.player_sprite, player.pos[0], dir, scale);
     }
 
-    {
+    if (false) {
         var pbodies = self.world.select(struct {
             pos: comps.Pos,
             stats: comps.Stats,
