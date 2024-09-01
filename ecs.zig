@@ -26,8 +26,8 @@ pub fn World(comptime Comps: type) type {
         const Self = @This();
 
         pub const Id = extern struct {
-            index: u32,
-            version: u32,
+            index: u32 = 0,
+            version: u32 = std.math.maxInt(u32),
 
             pub fn toRaw(self: Id) u64 {
                 return @bitCast(self);
