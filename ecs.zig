@@ -168,15 +168,17 @@ pub fn World(comptime Comps: type) type {
                 return &@as([*]C, @alignCast(@ptrCast(lane.data)))[self.index];
             }
 
-            pub fn select(self: *const Entity, comptime Q: type) ?MapStruct(Q, ToPtr) {
-                const mask = comptime computeMask(@typeInfo(Q).Struct);
+            pub fn select(self: *const Entity, comptime Q: type) ?MapStruct(ExpandQuery(Q), ToPtr) {
+                const QA = ExpandQuery(Q);
+
+                const mask = comptime computeMask(@typeInfo(QA).Struct);
                 if (self.mask & mask != mask) return null;
 
-                var result: MapStruct(Q, ToPtr) = undefined;
-                inline for (std.meta.fields(Q)) |f| if (f.type == Id) {
+                var result: MapStruct(QA, ToPtr) = undefined;
+                inline for (std.meta.fields(QA)) |f| if (f.type == Id) {
                     @field(result, f.name) = &self.arch.back_refs[self.index];
                 };
-                inline for (std.meta.fields(Normalized(Q))) |f| {
+                inline for (std.meta.fields(Normalized(QA))) |f| {
                     if (@sizeOf(f.type) == 0) continue;
                     const i = @popCount(self.mask & ((@as(Mask, 1) << comptime componentIdOf(f.type)) - 1));
                     @field(result, f.name) = &@as([*]f.type, @alignCast(@ptrCast(self.arch.lanes[i].data)))[self.index];

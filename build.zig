@@ -17,7 +17,6 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .target = target,
     });
-    //exe.linkLibC();
     exe.linkLibrary(raylib_artifact);
 
     const runa = b.addRunArtifact(exe);
