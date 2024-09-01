@@ -410,7 +410,7 @@ fn draw(self: *Game) !void {
         var iter = self.world.select(struct { cms.Prt, cms.Pos, cms.Stt, cms.Tmp });
         while (iter.next()) |pt| {
             const rate = divToFloat(self.timeRem(pt.tmp[0]) orelse 0, 100);
-            rl.DrawCircleV(vec.asRl(pt.pos[0]), pt.stt[0].size * rate, rl.ColorAlpha(rl.ORANGE, rate));
+            rl.DrawCircleV(vec.asRl(pt.pos[0]), pt.stt[0].size * rate, rl.ColorAlpha(rl.SKYBLUE, rate));
         }
     }
 
