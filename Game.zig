@@ -14,6 +14,7 @@ camera: rl.Camera2D,
 
 textures: Textures,
 stats: BuiltinStats = .{},
+particles: BuiltinParticles = .{},
 
 const std = @import("std");
 const rl = @cImport({
@@ -30,7 +31,7 @@ const Id = World.Id;
 
 const Textures = struct {
     player: rl.Texture2D,
-    meteor: rl.Texture2D,
+    enemy: rl.Texture2D,
     bullet: rl.Texture2D,
     fire: rl.Texture2D,
 
@@ -55,9 +56,9 @@ const BuiltinStats = struct {
         .size = 15,
         .max_health = 100,
     },
-    meteor: Stats = .{
+    enemy: Stats = .{
         .fric = 1,
-        .size = 20,
+        .size = 15,
         .sight = 1000,
         .damage = 10,
         .team = 1,
@@ -71,6 +72,21 @@ const BuiltinStats = struct {
     fire: Stats = .{
         .fric = 4,
         .size = 10,
+        .lifetime = 100,
+        .color = rl.SKYBLUE,
+    },
+    enemy_fire: Stats = .{
+        .fric = 4,
+        .size = 10,
+        .lifetime = 200,
+        .color = rl.ORANGE,
+    },
+    bullet_trail: Stats = .{
+        .fric = 1,
+        .size = 7,
+        .fade = false,
+        .lifetime = 300,
+        .color = rl.SKYBLUE,
     },
 
     fn fillTextures(self: *BuiltinStats, textures: *const Textures) void {
@@ -89,7 +105,10 @@ const Stats = struct {
     sight: f32 = 0,
     damage: u32 = 0,
     team: u32 = 0,
+    lifetime: u32 = 0,
     max_health: u32 = 0,
+    color: rl.Color = rl.WHITE,
+    fade: bool = true,
     texture: ?*const rl.Texture2D = null,
 
     fn mass(self: *const @This()) f32 {
@@ -100,6 +119,39 @@ const Stats = struct {
         std.debug.assert(self.texture.?.width == self.texture.?.height);
         return self.size / @as(f32, @floatFromInt(@divFloor(self.texture.?.width, 2)));
     }
+};
+
+const BuiltinParticles = struct {
+    fire: ParticleStats = .{
+        .init_vel = 100,
+        .offset = .after,
+        .lifetime_variation = 40,
+        .batch = 3,
+    },
+    enemy_fire: ParticleStats = .{
+        .init_vel = 70,
+        .offset = .after,
+        .lifetime_variation = 40,
+        .batch = 2,
+    },
+    bullet_trail: ParticleStats = .{},
+
+    fn fillStats(self: *BuiltinParticles, stats: *const BuiltinStats) void {
+        inline for (@typeInfo(BuiltinStats).Struct.fields) |field| {
+            if (@hasField(BuiltinParticles, field.name)) {
+                @field(self, field.name).particle = &@field(stats, field.name);
+            }
+        }
+    }
+};
+
+const ParticleStats = struct {
+    init_vel: f32 = 0,
+    offset: enum { after, center } = .center,
+    lifetime_variation: u32 = 1,
+    spawn_rate: u32 = 0,
+    batch: u32 = 1,
+    particle: *const Stats = undefined,
 };
 
 const cms = struct {
@@ -118,6 +170,10 @@ const cms = struct {
         hit_tween: u32 = 0,
     };
     pub const Prt = struct {};
+    pub const Psr = struct {
+        stats: *const ParticleStats,
+        reload: u32 = 0,
+    };
 };
 
 const player_acc = 700.0;
@@ -136,6 +192,7 @@ pub fn run() !void {
     defer self.deinit();
 
     self.stats.fillTextures(&self.textures);
+    self.particles.fillStats(&self.stats);
 
     self.player = try self.world.create(self.gpa, .{
         cms.Stt{&self.stats.player},
@@ -149,12 +206,13 @@ pub fn run() !void {
         for (0..4) |j| {
             const pos = .{ 80 * @as(f32, @floatFromInt(i + 1)), 80 * @as(f32, @floatFromInt(j + 1)) };
             _ = try self.world.create(self.gpa, .{
-                cms.Stt{&self.stats.meteor},
+                cms.Stt{&self.stats.enemy},
                 cms.Pos{pos},
                 cms.Vel{vec.zero},
-                try self.createPhy(pos, self.stats.meteor.size),
+                try self.createPhy(pos, self.stats.enemy.size),
                 cms.Nmy{},
-                cms.Hlt{ .points = self.stats.meteor.max_health },
+                cms.Hlt{ .points = self.stats.enemy.max_health },
+                cms.Psr{ .stats = &self.particles.enemy_fire },
             });
         }
     }
@@ -214,30 +272,15 @@ fn createPhy(self: *Game, pos: Vec, size: f32) !cms.Phy {
 
 fn input(self: *Game) !void {
     b: {
-        const player = self.world.selectOne(
-            self.player,
-            struct { cms.Stt, cms.Vel, cms.Pos },
-        ) orelse break :b;
+        const player = self.world.get(self.player) orelse break :b;
+        const base = player.select(struct { cms.Stt, cms.Vel, cms.Pos }).?;
 
-        const face = vec.norm(self.mousePos() - player.pos[0]);
-
-        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
-            const trust = face * vec.splat(player_acc * rl.GetFrameTime());
-            player.vel[0] += trust;
-
-            _ = try self.world.create(self.gpa, .{
-                cms.Stt{&self.stats.fire},
-                cms.Pos{player.pos[0] - face * vec.splat(player.stt[0].size)},
-                cms.Vel{vec.unit(self.prng.random().float(f32) * std.math.tau) * vec.splat(100)},
-                cms.Tmp{self.time + 100 - self.prng.random().int(u32) % 40},
-                cms.Prt{},
-            });
-        }
+        const face = vec.norm(self.mousePos() - base.pos[0]);
 
         if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT) and
             self.timer(&self.player_reload, player_reload_time))
         {
-            const pos = face * vec.splat(player.stt[0].size + 10) + player.pos[0];
+            const pos = face * vec.splat(base.stt[0].size + 10) + base.pos[0];
             const vel = face * vec.splat(1000);
             _ = try self.world.create(self.gpa, .{
                 cms.Stt{&self.stats.bullet},
@@ -245,14 +288,24 @@ fn input(self: *Game) !void {
                 cms.Vel{vel},
                 try self.createPhy(pos, self.stats.bullet.size),
                 cms.Tmp{self.time + 1000},
+                cms.Psr{ .stats = &self.particles.bullet_trail },
             });
         }
 
-        self.camera.target = vec.asRl(player.pos[0]);
+        self.camera.target = vec.asRl(base.pos[0]);
         self.camera.offset = .{
             .x = @floatFromInt(@divFloor(rl.GetScreenWidth(), 2)),
             .y = @floatFromInt(@divFloor(rl.GetScreenHeight(), 2)),
         };
+
+        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
+            const trust = face * vec.splat(player_acc * rl.GetFrameTime());
+            base.vel[0] += trust;
+
+            try self.world.addComp(self.gpa, self.player, cms.Psr{ .stats = &self.particles.fire });
+        } else {
+            _ = try self.world.removeComp(self.gpa, self.player, cms.Psr);
+        }
     }
 }
 
@@ -394,8 +447,10 @@ fn update(self: *Game) !void {
     }
 
     for (to_delete.items) |id| {
-        if (self.world.selectOne(id, struct { cms.Phy })) |n|
-            self.quad.remove(n.phy.quad, @bitCast(id));
+        const e = self.world.get(id).?;
+        if (e.get(cms.Phy)) |phy|
+            self.quad.remove(phy.quad, @bitCast(id));
+        // TODO: explode
         std.debug.assert(self.world.remove(id));
     }
 }
@@ -409,8 +464,9 @@ fn draw(self: *Game) !void {
     {
         var iter = self.world.select(struct { cms.Prt, cms.Pos, cms.Stt, cms.Tmp });
         while (iter.next()) |pt| {
-            const rate = divToFloat(self.timeRem(pt.tmp[0]) orelse 0, 100);
-            rl.DrawCircleV(vec.asRl(pt.pos[0]), pt.stt[0].size * rate, rl.ColorAlpha(rl.SKYBLUE, rate));
+            const rate = divToFloat(self.timeRem(pt.tmp[0]) orelse 0, pt.stt[0].lifetime);
+            const color = if (pt.stt[0].fade) rl.ColorAlpha(pt.stt[0].color, rate) else pt.stt[0].color;
+            rl.DrawCircleV(vec.asRl(pt.pos[0]), pt.stt[0].size * rate, color);
         }
     }
 
@@ -428,7 +484,9 @@ fn draw(self: *Game) !void {
 
             const base = pb.select(struct { cms.Pos, cms.Stt }).?;
 
-            const rot = if (std.meta.eql(id, self.player)) vec.ang(self.mousePos() - base.pos[0]) else 0;
+            const rot = if (std.meta.eql(id, self.player))
+                vec.ang(self.mousePos() - base.pos[0])
+            else if (pb.get(cms.Vel)) |vel| vec.ang(vel[0]) else 0.0;
 
             if (base.stt[0].texture) |tx| {
                 var tone: f32 = 1;
@@ -451,6 +509,26 @@ fn draw(self: *Game) !void {
             } else {
                 rl.DrawCircleV(vec.asRl(base.pos[0]), base.stt[0].size, rl.RED);
             }
+
+            if (pb.get(cms.Psr)) |psr| if (self.timer(&psr.reload, psr.stats.spawn_rate)) {
+                const face = vec.unit(rot);
+                const offset = switch (psr.stats.offset) {
+                    .center => vec.zero,
+                    .after => face * vec.splat(-base.stt[0].size),
+                };
+
+                const vel = if (pb.get(cms.Vel)) |vel| vel[0] else vec.zero;
+
+                for (0..psr.stats.batch) |_| {
+                    _ = try self.world.create(self.gpa, .{
+                        cms.Stt{psr.stats.particle},
+                        cms.Pos{base.pos[0] + offset + vel * vec.splat(rl.GetFrameTime())},
+                        cms.Vel{vec.unit(self.prng.random().float(f32) * std.math.tau) * vec.splat(psr.stats.init_vel)},
+                        cms.Tmp{self.time + psr.stats.particle.lifetime - self.prng.random().int(u32) % psr.stats.lifetime_variation},
+                        cms.Prt{},
+                    });
+                }
+            };
         };
     }
 
