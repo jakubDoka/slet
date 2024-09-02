@@ -19,11 +19,7 @@ particles: BuiltinParticles = .{},
 
 const std = @import("std");
 const resources = @import("resources.zig");
-const rl = @cImport({
-    @cInclude("raylib.h");
-    @cInclude("raymath.h");
-    @cInclude("rlgl.h");
-});
+const rl = @import("main.zig").rl;
 const vec = @import("vec.zig");
 const Vec = vec.T;
 const World = @import("ecs.zig").World(cms);
@@ -50,7 +46,7 @@ const Textures = struct {
         }
 
         const frames: *[info.fields.len]Frame = @ptrCast(self);
-        return try resources.sprites.pack(gpa, &images, frames, 128);
+        return try resources.sprites.pack(gpa, &images, frames, 32);
     }
 };
 
@@ -698,14 +694,9 @@ fn predictTarget(turret: Vec, target: Vec, target_vel: Vec, bullet_speed: f32) ?
 inline fn drawCenteredTexture(self: *Game, texture: *const Textures.Frame, pos: Vec, rot: f32, scale: f32, color: rl.Color) void {
     const real_width = texture.r.f.width * scale;
     const real_height = texture.r.f.height * scale;
-    rl.DrawTexturePro(
-        self.sheet,
-        texture.r.f,
-        rl.Rectangle{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height },
-        rl.Vector2{ .x = real_width / 2, .y = real_height / 2 },
-        rot / std.math.tau * 360,
-        color,
-    );
+    const dst = .{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
+    const origin = .{ .x = real_width / 2, .y = real_height / 2 };
+    rl.DrawTexturePro(self.sheet, texture.r.f, dst, origin, rot / std.math.tau * 360, color);
 }
 
 inline fn tof(value: anytype) f32 {

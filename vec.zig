@@ -1,9 +1,5 @@
 const std = @import("std");
-const rl = @cImport({
-    @cInclude("raylib.h");
-    @cInclude("raymath.h");
-    @cInclude("rlgl.h");
-});
+const rl = @import("main.zig").rl;
 
 pub const T = @Vector(2, f32);
 

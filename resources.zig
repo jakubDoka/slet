@@ -1,8 +1,4 @@
-const rl = @cImport({
-    @cInclude("raylib.h");
-    @cInclude("raymath.h");
-    @cInclude("rlgl.h");
-});
+const rl = @import("main.zig").rl;
 const std = @import("std");
 
 pub const sprites = struct {
@@ -84,12 +80,7 @@ pub const sprites = struct {
                 .width = @floatFromInt(frame.r.i.width),
                 .height = @floatFromInt(frame.r.i.height),
             } };
-            const src = rl.Rectangle{
-                .x = 0,
-                .y = 0,
-                .width = frame.r.f.width,
-                .height = frame.r.f.height,
-            };
+            const src = .{ .x = 0, .y = 0, .width = frame.r.f.width, .height = frame.r.f.height };
             rl.ImageDraw(&image, tex, src, frame.r.f, rl.WHITE);
         }
 
