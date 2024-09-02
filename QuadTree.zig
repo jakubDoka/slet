@@ -11,10 +11,12 @@ const Slices = BuddyAllocator(u64, std.math.maxInt(u64), 32, 1);
 const Pos = [2]i32;
 
 const Quad = struct {
-    depth: u5 = 0,
-    parent: Id = invalid_id,
+    meta: packed struct(u32) {
+        depth: u5 = 0,
+        total: u27 = 0,
+    } = .{},
     pos: Pos = .{ 0, 0 },
-    total: u32 = 0,
+    parent: Id = invalid_id,
     children: Id = invalid_id,
     ent_base: Slices.Index = 0,
     count: u32 = 0,
@@ -113,7 +115,7 @@ pub const Query = struct {
         while (true) switch (self.state) {
             .diving => {
                 const quad = self.quad.quads.items[self.cursor];
-                const radius = self.quad.radius >> quad.depth;
+                const radius = self.quad.radius >> quad.meta.depth;
                 const cx = quad.pos[0];
                 const cy = quad.pos[1];
 
@@ -170,7 +172,7 @@ pub fn insert(
     id: Slices.Elem,
 ) !Id {
     defer self.checkIntegrity(0);
-    self.quads.items[0].total += 1;
+    self.quads.items[0].meta.total += 1;
     const find_res = self.findQuad(pos, size, 0);
     return try self.insertInternal(alc, find_res, id, 0);
 }
@@ -186,11 +188,11 @@ pub fn update(
     const prev = quid.*;
 
     var node = &self.quads.items[prev];
-    var radius = self.radius >> node.depth;
+    var radius = self.radius >> node.meta.depth;
 
     while (node.parent != invalid_id) {
         const parent = &self.quads.items[node.parent];
-        if (parent.total > quad_limit) break;
+        if (parent.meta.total > quad_limit) break;
         quid.* = node.parent;
         node = parent;
         radius <<= 1;
@@ -233,7 +235,7 @@ pub fn update(
     const top = quid.*;
     const better_pos = self.findQuad(pos, size, top);
 
-    if (better_pos.id == prev and (better_pos.index == null or node.total < quad_limit)) {
+    if (better_pos.id == prev and (better_pos.index == null or node.meta.total < quad_limit)) {
         std.debug.assert(quid.* == prev);
         return;
     }
@@ -245,7 +247,7 @@ pub fn update(
 }
 
 pub fn remove(self: *QuadTree, quad: Id, id: Slices.Elem) void {
-    self.quads.items[0].total -= 1;
+    self.quads.items[0].meta.total -= 1;
     self.removeInternal(quad, id, 0);
 }
 
@@ -258,8 +260,8 @@ fn insertInternal(
 ) !Id {
     var final_id = find_res.id;
     var quad = &self.quads.items[find_res.id];
-    if (quad.total > quad_limit and find_res.index != null and
-        quad.depth != std.math.maxInt(u5))
+    if (quad.meta.total > quad_limit and find_res.index != null and
+        quad.meta.depth != std.math.maxInt(u5))
         final_id = try self.split(alc, find_res, id)
     else
         try quad.pushEntity(&self.slices, alc, id);
@@ -267,7 +269,7 @@ fn insertInternal(
     var cursor = final_id;
     quad = &self.quads.items[cursor];
     while (cursor != inc_up_to) {
-        quad.total += 1;
+        quad.meta.total += 1;
         cursor = quad.parent;
         quad = &self.quads.items[cursor];
     }
@@ -284,9 +286,9 @@ fn removeInternal(self: *QuadTree, quid: Id, id: Slices.Elem, dec_up_to: Id) voi
 
     var cursor = quid;
     while (cursor != dec_up_to) {
-        node.total -= 1;
+        node.meta.total -= 1;
         self.checkIntegrity(cursor);
-        if (node.count == node.total) {
+        if (node.count == node.meta.total) {
             self.freeChildren(node.children);
             node.children = invalid_id;
         }
@@ -300,7 +302,7 @@ fn checkIntegrity(self: *QuadTree, from: Id) void {
     const node = self.quads.items[from];
     if (node.children != invalid_id) {
         var sum: u32 = node.count;
-        const shift = self.radius >> node.depth + 1;
+        const shift = self.radius >> node.meta.depth + 1;
         const offs: [4][2]i32 = .{
             .{ -shift, -shift },
             .{ shift, -shift },
@@ -310,12 +312,12 @@ fn checkIntegrity(self: *QuadTree, from: Id) void {
         for (self.quads.items[node.children..][0..4], offs) |q, off| {
             std.debug.assert(q.pos[0] - off[0] == node.pos[0]);
             std.debug.assert(q.pos[1] - off[1] == node.pos[1]);
-            sum += q.total;
+            sum += q.meta.total;
         }
-        if (sum != node.total) std.debug.panic("{any} sum: {any} total: {any}", .{ from, sum, node.total });
+        if (sum != node.meta.total) std.debug.panic("{any} sum: {any} total: {any}", .{ from, sum, node.meta.total });
         for (node.children..node.children + 4) |c| self.checkIntegrity(@intCast(c));
     } else {
-        if (node.count != node.total) std.debug.panic("{any} total: {any} sum: {any}", .{ from, node.total, node.count });
+        if (node.count != node.meta.total) std.debug.panic("{any} total: {any} sum: {any}", .{ from, node.meta.total, node.count });
     }
 }
 
@@ -328,7 +330,7 @@ fn split(self: *QuadTree, alc: std.mem.Allocator, find_res: FindResult, id: Slic
 
 fn allocChildren(self: *QuadTree, alc: std.mem.Allocator, parent: Id) !Id {
     const node = &self.quads.items[parent];
-    const next_depth = node.depth + 1;
+    const next_depth = node.meta.depth + 1;
     std.debug.assert(node.children == invalid_id);
 
     const shift = self.radius >> next_depth;
@@ -355,7 +357,7 @@ fn allocChildren(self: *QuadTree, alc: std.mem.Allocator, parent: Id) !Id {
         .{ .pos = .{ cx + shift, cy + shift } },
     };
     inline for (buf) |*q| q.parent = parent;
-    inline for (buf) |*q| q.depth = next_depth;
+    inline for (buf) |*q| q.meta.depth = next_depth;
 
     return id;
 }
@@ -384,12 +386,12 @@ fn findQuad(
 
     var node: Id = from;
     var center_vec: Vec = .{ ix, -ix, iy, -iy };
-    var shift: Vec = @splat(self.radius >> from_node.depth);
+    var shift: Vec = @splat(self.radius >> from_node.meta.depth);
 
     while (true) {
         const quad = &self.quads.items[node];
 
-        if (quad.total <= quad_limit) return .{ .id = node, .index = null };
+        if (quad.meta.total <= quad_limit) return .{ .id = node, .index = null };
 
         const mask = pos_vec < center_vec;
         const mask_int: u4 = @bitCast(mask);
