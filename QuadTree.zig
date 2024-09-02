@@ -91,7 +91,7 @@ pub fn init(alc: std.mem.Allocator, radius: u5) !QuadTree {
 pub fn deinit(self: *QuadTree, alc: std.mem.Allocator) void {
     self.quads.deinit(alc);
     self.slices.deinit(alc);
-    self.free = undefined;
+    self.* = undefined;
 }
 
 pub fn entities(self: *const QuadTree, id: Id) []const Slices.Elem {
@@ -335,7 +335,6 @@ fn allocChildren(self: *QuadTree, alc: std.mem.Allocator, parent: Id) !Id {
     std.debug.assert(node.children == invalid_id);
 
     const shift = self.radius >> next_depth;
-    //std.debug.assert(shift != 0);
     const cx = node.pos[0];
     const cy = node.pos[1];
 
