@@ -37,6 +37,7 @@ const Quad = struct {
             if (!slices.grow(self.ent_base, self.count)) {
                 const new = try slices.alloc(gpa, self.count * 2);
                 @memcpy(slices.mem[new..][0..self.count], slices.mem[self.ent_base..][0..self.count]);
+                slices.free(self.ent_base, ceil(self.count));
                 self.ent_base = new;
             }
         }
