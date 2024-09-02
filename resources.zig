@@ -1,65 +1,25 @@
-const rl = @import("raylib");
+const rl = @cImport({
+    @cInclude("raylib.h");
+    @cInclude("raymath.h");
+    @cInclude("rlgl.h");
+});
 const std = @import("std");
 
-pub const SpriteSheet = struct {
-    texture: rl.Texture2D,
-    frames: []TexturePacker.Frame,
-
-    pub fn init(alc: std.mem.Allocator, textures: []const rl.Image) !SpriteSheet {
-        const big_enough = 1 << 12;
-        var texture = rl.Image.genColor(big_enough, big_enough, rl.Color.blank);
-        defer texture.unload();
-
-        var packer = try TexturePacker.init(alc, big_enough);
-        defer packer.deinit(alc);
-
-        var frames = try alc.alloc(TexturePacker.Frame, textures.len);
-        errdefer alc.free(frames);
-
-        for (frames, textures) |*frame, tex|
-            frame.* = .{ .width = @intCast(tex.width), .height = @intCast(tex.height) };
-
-        try packer.pack(frames);
-
-        for (frames, textures) |*frame, tex| {
-            const src = rl.Rectangle{
-                .x = 0,
-                .y = 0,
-                .width = @floatFromInt(frame.width),
-                .height = @floatFromInt(frame.height),
-            };
-            const dest = rl.Rectangle{
-                .x = @floatFromInt(frame.x),
-                .y = @floatFromInt(frame.y),
-                .width = @floatFromInt(frame.width),
-                .height = @floatFromInt(frame.height),
-            };
-            texture.drawImage(tex, src, dest, rl.Color.white);
-        }
-
-        return SpriteSheet{
-            .texture = rl.Texture.fromImage(texture),
-            .frames = frames,
-        };
-    }
-
-    pub fn deinit(self: *SpriteSheet, alc: std.mem.Allocator) void {
-        alc.free(self.frames);
-        self.texture.unload();
-        self.* = undefined;
-    }
-};
-
-pub const TexturePacker = struct {
+pub const sprites = struct {
     pub const Frame = struct {
-        x: u32 = undefined,
-        y: u32 = undefined,
-        width: u32,
-        height: u32,
+        r: union {
+            f: rl.Rectangle,
+            i: struct {
+                x: u32 = undefined,
+                y: u32 = undefined,
+                width: u32,
+                height: u32,
+            },
+        },
         id: u32 = undefined,
 
         fn byArea(_: void, a: Frame, b: Frame) bool {
-            return (b.width * b.height) < (a.width * a.height);
+            return (b.r.i.width * b.r.i.height) < (a.r.i.width * a.r.i.height);
         }
 
         fn byId(_: void, a: Frame, b: Frame) bool {
@@ -67,47 +27,34 @@ pub const TexturePacker = struct {
         }
     };
 
-    taken_set: std.DynamicBitSetUnmanaged,
-    size: usize,
+    fn packFrames(gpa: std.mem.Allocator, frames: []Frame, size: u32) !void {
+        var taken_set = try std.DynamicBitSetUnmanaged.initEmpty(gpa, size * size);
+        defer taken_set.deinit(gpa);
 
-    pub fn init(gpa: std.mem.Allocator, size: usize) !TexturePacker {
-        return TexturePacker{
-            .size = size,
-            .taken_set = try std.DynamicBitSetUnmanaged.initEmpty(gpa, size * size),
-        };
-    }
-
-    pub fn deinit(self: *TexturePacker, gpa: std.mem.Allocator) void {
-        self.taken_set.deinit(gpa);
-        self.* = undefined;
-    }
-
-    pub fn pack(self: *TexturePacker, frames: []Frame) !void {
         for (frames, 0..) |*frame, i| frame.id = @intCast(i);
         std.sort.pdq(Frame, frames, {}, Frame.byArea);
-        defer std.sort.pdq(Frame, frames, {}, Frame.byId);
 
         m: for (frames) |*frame| {
-            var iter = self.taken_set.iterator(.{ .kind = .unset });
+            var iter = taken_set.iterator(.{ .kind = .unset });
             o: while (iter.next()) |pos| {
-                const x = pos % self.size;
-                const y = pos / self.size;
+                const x = pos % size;
+                const y = pos / size;
 
-                if (x + frame.width > self.size or y + frame.height > self.size) continue :o;
+                if (x + frame.r.i.width > size or y + frame.r.i.height > size) continue :o;
 
-                for ([_]usize{ y, y + frame.height - 1 }) |dy| for (x..x + frame.width) |dx| {
-                    if (self.taken_set.isSet(dx + dy * self.size)) continue :o;
+                inline for (.{ y, y + frame.r.i.height - 1 }) |dy| for (x..x + frame.r.i.width) |dx| {
+                    if (taken_set.isSet(dx + dy * size)) continue :o;
                 };
-                for ([_]usize{ x, x + frame.width - 1 }) |dx| for (y..y + frame.height) |dy| {
-                    if (self.taken_set.isSet(dx + dy * self.size)) continue :o;
+                inline for (.{ x, x + frame.r.i.width - 1 }) |dx| for (y..y + frame.r.i.height) |dy| {
+                    if (taken_set.isSet(dx + dy * size)) continue :o;
                 };
 
-                frame.x = @intCast(x);
-                frame.y = @intCast(y);
-                for (y..y + frame.height) |dy| {
-                    self.taken_set.setRangeValue(.{
-                        .start = x + dy * self.size,
-                        .end = x + frame.width + dy * self.size,
+                frame.r.i.x = @intCast(x);
+                frame.r.i.y = @intCast(y);
+                for (y..y + frame.r.i.height) |dy| {
+                    taken_set.setRangeValue(.{
+                        .start = x + dy * size,
+                        .end = x + frame.r.i.width + dy * size,
                     }, true);
                 }
 
@@ -117,19 +64,43 @@ pub const TexturePacker = struct {
             return error.OutOfMemory;
         }
 
-        self.taken_set.setRangeValue(.{
-            .start = 0,
-            .end = self.taken_set.bit_length,
-        }, false);
+        std.sort.pdq(Frame, frames, {}, Frame.byId);
+    }
+
+    pub fn pack(gpa: std.mem.Allocator, textures: []const rl.Image, frames: []Frame, sheet_size: u32) !rl.Texture2D {
+        var image = rl.GenImageColor(@intCast(sheet_size), @intCast(sheet_size), rl.BLANK);
+        defer rl.UnloadImage(image);
+
+        for (frames, textures) |*frame, tex| {
+            frame.* = .{ .r = .{ .i = .{ .width = @intCast(tex.width), .height = @intCast(tex.height) } } };
+        }
+
+        try packFrames(gpa, frames, sheet_size);
+
+        for (frames, textures) |*frame, tex| {
+            frame.r = .{ .f = .{
+                .x = @floatFromInt(frame.r.i.x),
+                .y = @floatFromInt(frame.r.i.y),
+                .width = @floatFromInt(frame.r.i.width),
+                .height = @floatFromInt(frame.r.i.height),
+            } };
+            const src = rl.Rectangle{
+                .x = 0,
+                .y = 0,
+                .width = frame.r.f.width,
+                .height = frame.r.f.height,
+            };
+            rl.ImageDraw(&image, tex, src, frame.r.f, rl.WHITE);
+        }
+
+        return rl.LoadTextureFromImage(image);
     }
 };
 
 test {
     const alc = std.testing.allocator;
-    var packer = try TexturePacker.init(alc, 512);
-    defer packer.deinit(alc);
 
-    var frames = [_]TexturePacker.Frame{
+    var frames = [_]sprites.Frame{
         .{ .width = 256, .height = 256 },
         .{ .width = 256, .height = 256 },
         .{ .width = 256, .height = 256 },
@@ -139,25 +110,20 @@ test {
         .{ .width = 128, .height = 128 },
     };
 
-    try packer.pack(&frames);
+    try sprites.packFrames(&frames);
 
-    rl.initWindow(0, 0, "");
-    defer rl.closeWindow();
+    rl.InitWindow(0, 0, "");
+    defer rl.CloseWindow();
 
-    var image_1 = rl.Image.genColor(256, 256, rl.Color.red);
-    defer image_1.unload();
-    var image_2 = rl.Image.genColor(128, 128, rl.Color.green);
-    defer image_2.unload();
-    var image_3 = rl.Image.genColor(64, 64, rl.Color.blue);
-    defer image_3.unload();
-    var image_4 = rl.Image.genColor(32, 32, rl.Color.yellow);
-    defer image_4.unload();
+    var images = [_]rl.Image{
+        rl.GenImageColor(256, 256, rl.Color.red),
+        rl.GenImageColor(128, 128, rl.Color.green),
+        rl.GenImageColor(64, 64, rl.Color.blue),
+        rl.GenImageColor(32, 32, rl.Color.yellow),
+    };
+    defer for (images) |image| rl.UnloadImage(image);
 
-    var sheet = try SpriteSheet.init(alc, &.{
-        image_1,
-        image_2,
-        image_3,
-        image_4,
-    });
-    defer sheet.deinit(alc);
+    var fra: [4]sprites.Frame = undefined;
+    const sheet = try sprites.pack(alc, &images, &fra, 512);
+    rl.UnloadTexture(sheet);
 }

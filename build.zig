@@ -7,7 +7,6 @@ pub fn build(b: *std.Build) !void {
     const raylib_dep = b.dependency("raylib", .{
         .target = target,
         .optimize = optimize,
-        .linux_display_backend = .Both,
     });
 
     const raylib_artifact = raylib_dep.artifact("raylib");

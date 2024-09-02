@@ -12,11 +12,13 @@ player: Id,
 player_reload: u32 = 0,
 camera: rl.Camera2D,
 
+sheet: rl.Texture2D,
 textures: Textures,
 stats: BuiltinStats = .{},
 particles: BuiltinParticles = .{},
 
 const std = @import("std");
+const resources = @import("resources.zig");
 const rl = @cImport({
     @cInclude("raylib.h");
     @cInclude("raymath.h");
@@ -30,28 +32,25 @@ const Game = @This();
 const Id = World.Id;
 
 const Textures = struct {
-    player: rl.Texture2D,
-    enemy: rl.Texture2D,
-    bullet: rl.Texture2D,
-    fire: rl.Texture2D,
-    turret_cannon: rl.Texture2D,
-    turret: rl.Texture2D,
+    player: Frame,
+    enemy: Frame,
+    bullet: Frame,
+    fire: Frame,
+    turret_cannon: Frame,
+    turret: Frame,
 
-    fn init() Textures {
-        var tex: Textures = undefined;
-        inline for (@typeInfo(@TypeOf(tex)).Struct.fields) |field| {
+    const Frame = resources.sprites.Frame;
+    const info = @typeInfo(Textures).Struct;
+
+    fn init(self: *Textures, gpa: std.mem.Allocator) !rl.Texture2D {
+        var images: [info.fields.len]rl.Image = undefined;
+        inline for (info.fields, &images) |field, *i| {
             const data = @embedFile("assets/" ++ field.name ++ ".png");
-            const image = rl.LoadImageFromMemory(".png", data, data.len);
-            @field(tex, field.name) = rl.LoadTextureFromImage(image);
-            rl.UnloadImage(image);
+            i.* = rl.LoadImageFromMemory(".png", data, data.len);
         }
-        return tex;
-    }
 
-    fn deinit(self: *Textures) void {
-        inline for (@typeInfo(Textures).Struct.fields) |field| {
-            rl.UnloadTexture(@field(self, field.name));
-        }
+        const frames: *[info.fields.len]Frame = @ptrCast(self);
+        return try resources.sprites.pack(gpa, &images, frames, 128);
     }
 };
 
@@ -133,8 +132,8 @@ const Stats = struct {
     lifetime: u32 = 0,
     fade: bool = true,
     color: rl.Color = rl.WHITE,
-    texture: ?*const rl.Texture2D = null,
-    cannon_texture: ?*const rl.Texture2D = null,
+    texture: ?*const Textures.Frame = null,
+    cannon_texture: ?*const Textures.Frame = null,
 
     team: u32 = 0,
     max_health: u32 = 0,
@@ -148,8 +147,8 @@ const Stats = struct {
     }
 
     fn scale(self: *const @This()) f32 {
-        std.debug.assert(self.texture.?.width == self.texture.?.height);
-        return self.size / @as(f32, @floatFromInt(@divFloor(self.texture.?.width, 2)));
+        std.debug.assert(self.texture.?.r.f.width == self.texture.?.r.f.height);
+        return self.size / (self.texture.?.r.f.width / 2);
     }
 };
 
@@ -284,8 +283,10 @@ pub fn run() !void {
 }
 
 fn init(gpa: std.mem.Allocator) !Game {
+    var textures: Textures = undefined;
     return .{
-        .textures = Textures.init(),
+        .sheet = try Textures.init(&textures, gpa),
+        .textures = textures,
 
         .player = undefined,
         .camera = .{ .zoom = 1, .offset = .{ .x = 400, .y = 300 } },
@@ -304,8 +305,6 @@ fn deinit(self: *Game) void {
 
     self.world.deinit(self.gpa);
     self.quad.deinit(self.gpa);
-
-    self.textures.deinit();
 }
 
 fn createStats(self: *Game, stats: Stats) !cms.Stt {
@@ -619,7 +618,7 @@ fn draw(self: *Game) !void {
             }
 
             if (base.stt[0].texture) |tx| {
-                drawCenteredTexture(tx.*, base.pos[0], rot, base.stt[0].scale(), fcolor(1, tone, tone));
+                self.drawCenteredTexture(tx, base.pos[0], rot, base.stt[0].scale(), fcolor(1, tone, tone));
                 if (health_bar_perc != 0) {
                     const end = 360 * health_bar_perc;
                     const size = base.stt[0].size;
@@ -631,7 +630,7 @@ fn draw(self: *Game) !void {
 
             if (pb.get(cms.Trt)) |trt| b: {
                 const tex = base.stt[0].cannon_texture orelse break :b;
-                drawCenteredTexture(tex.*, base.pos[0], trt.rot, base.stt[0].scale(), fcolor(1, tone, tone));
+                self.drawCenteredTexture(tex, base.pos[0], trt.rot, base.stt[0].scale(), fcolor(1, tone, tone));
             }
 
             if (pb.get(cms.Psr)) |psr| if (self.timer(&psr.reload, psr.stats.spawn_rate)) {
@@ -696,12 +695,12 @@ fn predictTarget(turret: Vec, target: Vec, target_vel: Vec, bullet_speed: f32) ?
     return target + target_vel * vec.splat(t);
 }
 
-inline fn drawCenteredTexture(texture: rl.Texture2D, pos: Vec, rot: f32, scale: f32, color: rl.Color) void {
-    const real_width = tof(texture.width) * scale;
-    const real_height = tof(texture.height) * scale;
+inline fn drawCenteredTexture(self: *Game, texture: *const Textures.Frame, pos: Vec, rot: f32, scale: f32, color: rl.Color) void {
+    const real_width = texture.r.f.width * scale;
+    const real_height = texture.r.f.height * scale;
     rl.DrawTexturePro(
-        texture,
-        rl.Rectangle{ .x = 0, .y = 0, .width = tof(texture.width), .height = tof(texture.height) },
+        self.sheet,
+        texture.r.f,
         rl.Rectangle{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height },
         rl.Vector2{ .x = real_width / 2, .y = real_height / 2 },
         rot / std.math.tau * 360,
