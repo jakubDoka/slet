@@ -15,8 +15,9 @@ pub fn BuddyAllocator(
     return struct {
         mem: []align(@alignOf(FreeHeader)) T = &.{},
         sclasses: [sclass_count]Index = [_]Index{index_sentinel} ** sclass_count,
+        alloc_count: @TypeOf(default_int) = default_int,
 
-        allocations: if (debug) std.ArrayListUnmanaged(Allocation) else void = if (debug) .{},
+        const default_int = if (debug) @as(usize, 0);
 
         comptime {
             if (base_cap * @sizeOf(T) < @sizeOf(FreeHeader)) {
@@ -48,11 +49,6 @@ pub fn BuddyAllocator(
             else => invertBits(sentinel),
         };
 
-        const Allocation = struct {
-            pos: Index,
-            sclass: SClass,
-        };
-
         const FreeHeader = struct {
             sentinel: T = sentinel,
             prev: Index,
@@ -61,6 +57,7 @@ pub fn BuddyAllocator(
 
         pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
             gpa.free(self.mem);
+            if (debug and self.alloc_count != 0) std.debug.panic("{d} leaked", .{self.alloc_count});
             self.* = undefined;
         }
 
@@ -79,7 +76,7 @@ pub fn BuddyAllocator(
                 self.mem = try gpa.realloc(self.mem, new_size);
 
                 if (old_size == 0) {
-                    self.free(0, @intCast(new_size));
+                    self.freeNoDefrag(0, sclassOf(@intCast(new_size)));
                 } else {
                     var cursor: Size = @intCast(old_size);
                     while (true) {
@@ -106,6 +103,8 @@ pub fn BuddyAllocator(
                 cursor +%= step;
                 step *%= 2;
             }
+
+            if (debug) self.alloc_count += 1;
 
             return allc;
         }
@@ -149,6 +148,8 @@ pub fn BuddyAllocator(
 
             std.debug.assert(!isSentinel(self.mem[curIdx]));
             self.freeNoDefrag(curIdx, sclass);
+
+            if (debug) self.alloc_count -= 1;
         }
 
         fn freeNoDefrag(self: *Self, curIdx: Index, sclass: SClass) void {

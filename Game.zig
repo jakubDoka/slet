@@ -10,6 +10,7 @@ prng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0),
 
 player: Id,
 player_reload: u32 = 0,
+player_boost: u32 = 0,
 camera: rl.Camera2D,
 
 sheet: rl.Texture2D,
@@ -211,70 +212,62 @@ const cms = struct {
 const player_acc = 700.0;
 const hit_tween_duration = 300;
 const player_reload_time = 300;
+const player_boost_rechagre = 300;
 
 pub fn run() !void {
+    rl.SetConfigFlags(rl.FLAG_FULLSCREEN_MODE);
     rl.SetTargetFPS(60);
 
-    rl.InitWindow(800, 600, "slet");
+    rl.InitWindow(0, 0, "slet");
     defer rl.CloseWindow();
 
     var alloc = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = alloc.deinit();
+
     var self = try Game.init(alloc.allocator());
     defer self.deinit();
 
     self.stats.fillTextures(&self.textures);
     self.particles.fillStats(&self.stats);
 
-    self.player = try self.world.create(self.gpa, .{
-        cms.Stt{&self.stats.player},
-        cms.Pos{.{ 0, 0 }},
-        cms.Vel{vec.zero},
-        try self.createPhy(.{ 0, 0 }, self.stats.player.size),
-        cms.Hlt{ .points = self.stats.player.max_health },
-    });
-
-    for (0..10) |i| {
-        for (0..10) |j| {
-            const pos = .{ 80 * @as(f32, @floatFromInt(i + 1)), 80 * @as(f32, @floatFromInt(j + 1)) };
-            _ = try self.world.create(self.gpa, .{
-                cms.Stt{&self.stats.turret},
-                cms.Pos{pos},
-                cms.Vel{vec.zero},
-                try self.createPhy(pos, self.stats.enemy.size),
-                //cms.Nmy{},
-                cms.Hlt{ .points = self.stats.enemy.max_health },
-                //cms.Psr{ .stats = &self.particles.enemy_fire },
-                cms.Trt{},
-            });
-        }
-    }
-
-    for (0..10) |i| {
-        for (0..10) |j| {
-            const pos = Vec{ 80 * @as(f32, @floatFromInt(i + 1)), 80 * @as(f32, @floatFromInt(j + 1)) };
-            _ = try self.world.create(self.gpa, .{
-                cms.Stt{&self.stats.enemy},
-                cms.Pos{pos + Vec{ 1000, 1000 }},
-                cms.Vel{vec.zero},
-                try self.createPhy(pos, self.stats.enemy.size),
-                cms.Nmy{},
-                cms.Hlt{ .points = self.stats.enemy.max_health },
-                cms.Psr{ .stats = &self.particles.enemy_fire },
-            });
-        }
-    }
-
     while (!rl.WindowShouldClose()) {
-        std.debug.assert(self.arena.reset(.retain_capacity));
-        self.time = @intFromFloat(rl.GetTime() * 1000);
+        self.player = try self.world.create(self.gpa, .{
+            cms.Stt{&self.stats.player},
+            cms.Pos{.{ 0, 0 }},
+            cms.Vel{vec.zero},
+            try self.createPhy(.{ 0, 0 }, self.stats.player.size),
+            cms.Hlt{ .points = self.stats.player.max_health },
+        });
 
-        try self.update();
-        try self.input();
+        const spacing = 50;
+        for (0..10) |i| {
+            for (0..10) |j| {
+                const pos = Vec{ spacing * @as(f32, @floatFromInt(i + 1)), spacing * @as(f32, @floatFromInt(j + 1)) };
+                _ = try self.world.create(self.gpa, .{
+                    cms.Stt{&self.stats.enemy},
+                    cms.Pos{pos + Vec{ 200, 200 }},
+                    cms.Vel{vec.zero},
+                    try self.createPhy(pos, self.stats.enemy.size),
+                    cms.Nmy{},
+                    cms.Hlt{ .points = self.stats.enemy.max_health },
+                    cms.Psr{ .stats = &self.particles.enemy_fire },
+                });
+            }
+        }
 
-        rl.BeginDrawing();
-        defer rl.EndDrawing();
-        try self.draw();
+        while (!rl.WindowShouldClose() and self.world.get(self.player) != null) {
+            std.debug.assert(self.arena.reset(.retain_capacity));
+            self.time = @intFromFloat(rl.GetTime() * 1000);
+
+            try self.update();
+            try self.input();
+
+            rl.BeginDrawing();
+            defer rl.EndDrawing();
+            try self.draw();
+        }
+
+        try self.reset();
     }
 }
 
@@ -298,9 +291,15 @@ fn init(gpa: std.mem.Allocator) !Game {
 fn deinit(self: *Game) void {
     self.arena.deinit();
     self.stat_arena.deinit();
-
     self.world.deinit(self.gpa);
     self.quad.deinit(self.gpa);
+}
+
+fn reset(self: *Game) !void {
+    self.world.deinit(self.gpa);
+    self.quad.deinit(self.gpa);
+    self.world = .{};
+    self.quad = try Quad.init(self.gpa, 20);
 }
 
 fn createStats(self: *Game, stats: Stats) !cms.Stt {
@@ -351,6 +350,46 @@ fn input(self: *Game) !void {
             try self.world.addComp(self.gpa, self.player, cms.Psr{ .stats = &self.particles.fire });
         } else {
             _ = try self.world.removeComp(self.gpa, self.player, cms.Psr);
+        }
+
+        if (rl.IsKeyDown(rl.KEY_D) and self.timer(&self.player_boost, player_boost_rechagre)) {
+            const trust = face * vec.splat(1000);
+            base.vel[0] += trust;
+
+            const face_ang = vec.ang(face);
+            for (5..15) |i| {
+                const pface = vec.rad(face_ang + std.math.phi / 20.0 * @as(f32, @floatFromInt(i)), 1);
+                try self.createBullet(
+                    &self.stats.bullet,
+                    base.stt[0],
+                    &self.particles.bullet_trail,
+                    base.pos[0] + pface * vec.splat(100),
+                    vec.zero,
+                    pface,
+                );
+
+                const kface = vec.rad(face_ang + std.math.phi / 20.0 * -@as(f32, @floatFromInt(i)), 1);
+                try self.createBullet(
+                    &self.stats.bullet,
+                    base.stt[0],
+                    &self.particles.bullet_trail,
+                    base.pos[0] + kface * vec.splat(100),
+                    vec.zero,
+                    kface,
+                );
+            }
+
+            //for (0..100) |_| {
+            //    const pface = vec.rad(self.prng.random().float(f32) * std.math.tau * 2, 1);
+            //    try self.createBullet(
+            //        &self.stats.bullet,
+            //        base.stt[0],
+            //        &self.particles.bullet_trail,
+            //        base.pos[0] + pface * vec.splat(100),
+            //        vec.zero,
+            //        pface,
+            //    );
+            //}
         }
     }
 }
@@ -562,7 +601,11 @@ fn update(self: *Game) !void {
     for (to_delete.items) |id| {
         const e = self.world.get(id).?;
         if (e.get(cms.Phy)) |phy|
-            self.quad.remove(phy.quad, @bitCast(id));
+            self.quad.remove(
+                self.gpa,
+                phy.quad,
+                @bitCast(id),
+            );
         // TODO: explode
         std.debug.assert(self.world.remove(id));
     }
