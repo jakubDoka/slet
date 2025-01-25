@@ -64,8 +64,7 @@ const Quad = struct {
         }
     }
 
-    fn popEntity(self: *Quad, slices: *Slices, gpa: std.mem.Allocator) Slices.Elem {
-        _ = gpa; // autofix
+    fn popEntity(self: *Quad, slices: *Slices) Slices.Elem {
         if (use_allocator) {
             //defer if (self.ents.items.len == @max(self.ents.capacity / 2, 2))
             //    self.ents.shrinkAndFree(gpa, self.ents.items.len);
@@ -327,7 +326,7 @@ fn removeInternal(self: *QuadTree, quid: Id, id: Slices.Elem, dec_up_to: Id, gpa
     const view = node.entities(self.slices);
     const index = std.mem.indexOfScalar(Slices.Elem, view, id) orelse std.debug.panic("{any} {any}", .{ view, id });
     std.mem.swap(Slices.Elem, &view[index], &view[view.len - 1]);
-    _ = node.popEntity(&self.slices, gpa);
+    _ = node.popEntity(&self.slices);
 
     var cursor = quid;
     while (cursor != dec_up_to) {
@@ -564,12 +563,13 @@ test {
             try quad.update(alc, &e.id, e.pos, 4, i);
         }
     }
-    std.debug.print("{any} {any} {any} {any} {any} {any} {any} {any}\n", .{
+    std.debug.print("{any} {any} {any}, {any} {any} {any} {any} {any} {any}\n", .{
         now.lap(),
         quad.quads.items.len,
         quad.slices.mem.len,
         quad.total_cache_count,
         quad.total_updates,
+        quad.slices.alloc_count,
         count * iter_count,
         alca.count,
         alca.peak,

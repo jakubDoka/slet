@@ -105,6 +105,13 @@ const BuiltinStats = struct {
         .lifetime = 300,
         .color = rl.SKYBLUE,
     },
+    boost_explosion: Stats = .{
+        .fric = 10,
+        .size = 20,
+        .fade = true,
+        .lifetime = 1000,
+        .color = rl.SKYBLUE,
+    },
 
     fn fillTextures(self: *BuiltinStats, textures: *const Textures) void {
         inline for (@typeInfo(Textures).Struct.fields) |field| {
@@ -163,6 +170,11 @@ const BuiltinParticles = struct {
         .batch = 2,
     },
     bullet_trail: ParticleStats = .{},
+    boost_explosion: ParticleStats = .{
+        .init_vel = 1000,
+        .offset = .after,
+        .lifetime_variation = 100,
+    },
 
     fn fillStats(self: *BuiltinParticles, stats: *const BuiltinStats) void {
         inline for (@typeInfo(BuiltinStats).Struct.fields) |field| {
@@ -352,44 +364,97 @@ fn input(self: *Game) !void {
             _ = try self.world.removeComp(self.gpa, self.player, cms.Psr);
         }
 
-        if (rl.IsKeyDown(rl.KEY_D) and self.timer(&self.player_boost, player_boost_rechagre)) {
-            const trust = face * vec.splat(1000);
-            base.vel[0] += trust;
+        const Attack = struct {
+            start: u32,
+            proj_timer: u32 = 0,
+            left: bool,
+            proj_counter: u32 = 5,
+            face: Vec,
+            boost_psr: cms.Psr,
 
-            const face_ang = vec.ang(face);
-            for (5..15) |i| {
-                const pface = vec.rad(face_ang + std.math.phi / 20.0 * @as(f32, @floatFromInt(i)), 1);
-                try self.createBullet(
-                    &self.stats.bullet,
-                    base.stt[0],
-                    &self.particles.bullet_trail,
-                    base.pos[0] + pface * vec.splat(100),
-                    vec.zero,
-                    pface,
-                );
+            const speed_boost = 4000.0;
+            const duration = 200;
+            const cooldown = 400;
+            const proj_latency = 10;
 
-                const kface = vec.rad(face_ang + std.math.phi / 20.0 * -@as(f32, @floatFromInt(i)), 1);
-                try self.createBullet(
-                    &self.stats.bullet,
-                    base.stt[0],
-                    &self.particles.bullet_trail,
-                    base.pos[0] + kface * vec.splat(100),
-                    vec.zero,
-                    kface,
-                );
+            var singleton: ?@This() = null;
+
+            fn poll(slf: *@This(), game: *Game, bs: @TypeOf(base)) !bool {
+                if (game.time > slf.start + duration) return true;
+
+                const trust = slf.face * vec.splat(speed_boost * rl.GetFrameTime());
+                bs.vel[0] += trust;
+                const face_ang = vec.ang(slf.face);
+                const playr = game.world.get(game.player).?;
+
+                try game.runPsr(bs, &slf.boost_psr, face_ang, playr);
+
+                if (game.timer(&slf.proj_timer, proj_latency)) {
+                    var side = @as(f32, @floatFromInt(slf.proj_counter));
+                    if (slf.left) side *= -1;
+                    const pface = vec.rad(face_ang + std.math.pi / 30.0 * side, 1);
+                    try game.createBullet(
+                        &game.stats.bullet,
+                        bs.stt[0],
+                        &game.particles.bullet_trail,
+                        bs.pos[0] + pface * vec.splat(30),
+                        bs.vel[0] * vec.splat(0.2),
+                        pface,
+                    );
+
+                    slf.proj_counter += 1;
+                }
+
+                //const face_ang = vec.ang(face);
+                //const stats = self.particles.boost_explosion;
+                //for (0..100) |_| {
+                //    _ = try self.world.create(self.gpa, .{
+                //        cms.Stt{stats.particle},
+                //        cms.Pos{base.pos[0] + vec.unit(face_ang + (std.math.pi * 0.75) + self.prng.random().float(f32) * (std.math.pi / 2.0)) * vec.splat(10 + self.prng.random().float(f32) * 50)},
+                //        cms.Vel{vec.unit(self.prng.random().float(f32) * std.math.tau) * vec.splat(100)},
+                //        cms.Tmp{self.time + stats.particle.lifetime - self.prng.random().int(u32) % stats.lifetime_variation},
+                //        cms.Prt{},
+                //    });
+                //}
+
+                //for (5..15) |i| {
+                //    const pface = vec.rad(face_ang + std.math.phi / 20.0 * @as(f32, @floatFromInt(i)), 1);
+                //    try self.createBullet(
+                //        &self.stats.bullet,
+                //        base.stt[0],
+                //        &self.particles.bullet_trail,
+                //        base.pos[0] + pface * vec.splat(100),
+                //        base.vel[0] * vec.splat(0.2),
+                //        pface,
+                //    );
+
+                //    const kface = vec.rad(face_ang + std.math.phi / 20.0 * -@as(f32, @floatFromInt(i)), 1);
+                //    try self.createBullet(
+                //        &self.stats.bullet,
+                //        base.stt[0],
+                //        &self.particles.bullet_trail,
+                //        base.pos[0] + kface * vec.splat(100),
+                //        base.vel[0] * vec.splat(0.2),
+                //        kface,
+                //    );
+                //}
+                return false;
             }
+        };
 
-            //for (0..100) |_| {
-            //    const pface = vec.rad(self.prng.random().float(f32) * std.math.tau * 2, 1);
-            //    try self.createBullet(
-            //        &self.stats.bullet,
-            //        base.stt[0],
-            //        &self.particles.bullet_trail,
-            //        base.pos[0] + pface * vec.splat(100),
-            //        vec.zero,
-            //        pface,
-            //    );
-            //}
+        if (Attack.singleton) |*at| {
+            if (try at.poll(self, base)) {
+                Attack.singleton = null;
+            }
+        }
+
+        if ((rl.IsKeyDown(rl.KEY_D) or rl.IsKeyDown(rl.KEY_A)) and self.timer(&self.player_boost, Attack.cooldown)) {
+            Attack.singleton = .{
+                .left = rl.IsKeyDown(rl.KEY_A),
+                .start = self.time,
+                .face = face,
+                .boost_psr = cms.Psr{ .stats = &self.particles.boost_explosion },
+            };
         }
     }
 }
@@ -672,31 +737,35 @@ fn draw(self: *Game) !void {
                 self.drawCenteredTexture(tex, base.pos[0], trt.rot, base.stt[0].scale(), fcolor(1, tone, tone));
             }
 
-            if (pb.get(cms.Psr)) |psr| if (self.timer(&psr.reload, psr.stats.spawn_rate)) {
-                const face = vec.unit(rot);
-                const offset = switch (psr.stats.offset) {
-                    .center => vec.zero,
-                    .after => face * vec.splat(-base.stt[0].size),
-                };
-
-                const vel = if (pb.get(cms.Vel)) |vel| vel[0] else vec.zero;
-
-                for (0..psr.stats.batch) |_| {
-                    _ = try self.world.create(self.gpa, .{
-                        cms.Stt{psr.stats.particle},
-                        cms.Pos{base.pos[0] + offset + vel * vec.splat(rl.GetFrameTime())},
-                        cms.Vel{vec.unit(self.prng.random().float(f32) * std.math.tau) * vec.splat(psr.stats.init_vel)},
-                        cms.Tmp{self.time + psr.stats.particle.lifetime - self.prng.random().int(u32) % psr.stats.lifetime_variation},
-                        cms.Prt{},
-                    });
-                }
-            };
+            if (pb.get(cms.Psr)) |psr| try self.runPsr(base, psr, rot, pb);
         };
     }
 
     rl.EndMode2D();
 
     rl.DrawFPS(20, 20);
+}
+
+fn runPsr(self: *Game, base: anytype, psr: *cms.Psr, rot: f32, pb: World.Entity) !void {
+    if (!self.timer(&psr.reload, psr.stats.spawn_rate)) return;
+
+    const face = vec.unit(rot);
+    const offset = switch (psr.stats.offset) {
+        .center => vec.zero,
+        .after => face * vec.splat(-base.stt[0].size - if (psr.stats.particle.size > base.stt[0].size) psr.stats.particle.size else 0),
+    };
+
+    const vel = if (pb.get(cms.Vel)) |vel| vel[0] else vec.zero;
+
+    for (0..psr.stats.batch) |_| {
+        _ = try self.world.create(self.gpa, .{
+            cms.Stt{psr.stats.particle},
+            cms.Pos{base.pos[0] + offset + vel * vec.splat(rl.GetFrameTime())},
+            cms.Vel{vec.unit(self.prng.random().float(f32) * std.math.tau) * vec.splat(psr.stats.init_vel)},
+            cms.Tmp{self.time + psr.stats.particle.lifetime - self.prng.random().int(u32) % psr.stats.lifetime_variation},
+            cms.Prt{},
+        });
+    }
 }
 
 fn timer(self: *Game, time: *u32, duration: u32) bool {
