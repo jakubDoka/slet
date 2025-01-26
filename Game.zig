@@ -10,191 +10,28 @@ prng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0),
 
 player: Id,
 player_reload: u32 = 0,
-player_boost: u32 = 0,
+player_attacks: [max_attacks]Attack = .{Attack.none} ** max_attacks,
 camera: rl.Camera2D,
-
-sheet: rl.Texture2D,
-textures: Textures,
-stats: BuiltinStats = .{},
-particles: BuiltinParticles = .{},
 
 const std = @import("std");
 const resources = @import("resources.zig");
 const rl = @import("main.zig").rl;
+const attacks = @import("attacks.zig");
+const assets = @import("assets.zig");
 const vec = @import("vec.zig");
+const levels = @import("levels.zig");
+
 const Vec = vec.T;
 const World = @import("ecs.zig").World(cms);
 const Quad = @import("QuadTree.zig");
 const Game = @This();
 const Id = World.Id;
+const Attack = assets.Attack;
+const Stats = assets.Stats;
+const ParticleStats = assets.ParticleStats;
+const tof = @import("main.zig").tof;
 
-const Textures = struct {
-    player: Frame,
-    enemy: Frame,
-    bullet: Frame,
-    fire: Frame,
-    turret_cannon: Frame,
-    turret: Frame,
-
-    const Frame = resources.sprites.Frame;
-    const info = @typeInfo(Textures).Struct;
-
-    fn init(self: *Textures, gpa: std.mem.Allocator) !rl.Texture2D {
-        var images: [info.fields.len]rl.Image = undefined;
-        inline for (info.fields, &images) |field, *i| {
-            const data = @embedFile("assets/" ++ field.name ++ ".png");
-            i.* = rl.LoadImageFromMemory(".png", data, data.len);
-        }
-
-        const frames: *[info.fields.len]Frame = @ptrCast(self);
-        return try resources.sprites.pack(gpa, &images, frames, 32);
-    }
-};
-
-const BuiltinStats = struct {
-    player: Stats = .{
-        .fric = 1,
-        .size = 15,
-        .max_health = 100,
-    },
-    enemy: Stats = .{
-        .fric = 1,
-        .size = 15,
-        .sight = 1000,
-        .damage = 10,
-        .team = 1,
-        .max_health = 100,
-    },
-    turret: Stats = .{
-        .fric = 10,
-        .size = 30,
-        .sight = 400,
-        .team = 0,
-        .max_health = 300,
-        .reload = 300,
-        .bullet = &.{
-            .fric = 0,
-            .speed = 1000,
-            .size = 10,
-            .team = 0,
-            .damage = 10,
-        },
-    },
-    bullet: Stats = .{
-        .speed = 600,
-        .fric = 0,
-        .size = 5,
-        .damage = 10,
-    },
-    fire: Stats = .{
-        .fric = 4,
-        .size = 10,
-        .lifetime = 100,
-        .color = rl.SKYBLUE,
-    },
-    enemy_fire: Stats = .{
-        .fric = 4,
-        .size = 10,
-        .lifetime = 200,
-        .color = rl.ORANGE,
-    },
-    bullet_trail: Stats = .{
-        .fric = 1,
-        .size = 7,
-        .fade = false,
-        .lifetime = 300,
-        .color = rl.SKYBLUE,
-    },
-    boost_explosion: Stats = .{
-        .fric = 10,
-        .size = 20,
-        .fade = true,
-        .lifetime = 1000,
-        .color = rl.SKYBLUE,
-    },
-
-    fn fillTextures(self: *BuiltinStats, textures: *const Textures) void {
-        inline for (@typeInfo(Textures).Struct.fields) |field| {
-            if (@hasField(BuiltinStats, field.name)) {
-                @field(self, field.name).texture = &@field(textures, field.name);
-            }
-
-            if (comptime std.mem.endsWith(u8, field.name, "_cannon")) {
-                @field(self, field.name[0 .. field.name.len - "_cannon".len]).cannon_texture =
-                    &@field(textures, field.name);
-            }
-        }
-    }
-};
-
-const Stats = struct {
-    fric: f32 = 0,
-    speed: f32 = 0,
-    cannon_speed: f32 = 0,
-    size: f32 = 0,
-
-    lifetime: u32 = 0,
-    fade: bool = true,
-    color: rl.Color = rl.WHITE,
-    texture: ?*const Textures.Frame = null,
-    cannon_texture: ?*const Textures.Frame = null,
-
-    team: u32 = 0,
-    max_health: u32 = 0,
-    damage: u32 = 0,
-    sight: f32 = 0,
-    reload: u32 = 0,
-    bullet: ?*const Stats = null,
-
-    fn mass(self: *const @This()) f32 {
-        return std.math.pow(f32, self.size, 2) * std.math.pi;
-    }
-
-    fn scale(self: *const @This()) f32 {
-        std.debug.assert(self.texture.?.r.f.width == self.texture.?.r.f.height);
-        return self.size / (self.texture.?.r.f.width / 2);
-    }
-};
-
-const BuiltinParticles = struct {
-    fire: ParticleStats = .{
-        .init_vel = 100,
-        .offset = .after,
-        .lifetime_variation = 40,
-        .batch = 3,
-    },
-    enemy_fire: ParticleStats = .{
-        .init_vel = 70,
-        .offset = .after,
-        .lifetime_variation = 40,
-        .batch = 2,
-    },
-    bullet_trail: ParticleStats = .{},
-    boost_explosion: ParticleStats = .{
-        .init_vel = 1000,
-        .offset = .after,
-        .lifetime_variation = 100,
-    },
-
-    fn fillStats(self: *BuiltinParticles, stats: *const BuiltinStats) void {
-        inline for (@typeInfo(BuiltinStats).Struct.fields) |field| {
-            if (@hasField(BuiltinParticles, field.name)) {
-                @field(self, field.name).particle = &@field(stats, field.name);
-            }
-        }
-    }
-};
-
-const ParticleStats = struct {
-    init_vel: f32 = 0,
-    offset: enum { after, center } = .center,
-    lifetime_variation: u32 = 1,
-    spawn_rate: u32 = 0,
-    batch: u32 = 1,
-    particle: *const Stats = undefined,
-};
-
-const cms = struct {
+pub const cms = struct {
     pub const Stt = struct { *const Stats };
     pub const Pos = struct { Vec };
     pub const Vel = struct { Vec };
@@ -209,7 +46,7 @@ const cms = struct {
         points: u32,
         hit_tween: u32 = 0,
     };
-    pub const Prt = struct {};
+    pub const Prt = struct { face: f32 = 0.0 };
     pub const Psr = struct {
         stats: *const ParticleStats,
         reload: u32 = 0,
@@ -221,10 +58,11 @@ const cms = struct {
     };
 };
 
-const player_acc = 700.0;
-const hit_tween_duration = 300;
+var sheet: rl.Texture2D = undefined;
+
+const hit_tween_duration = 100;
 const player_reload_time = 300;
-const player_boost_rechagre = 300;
+const max_attacks = 4;
 
 pub fn run() !void {
     rl.SetConfigFlags(rl.FLAG_FULLSCREEN_MODE);
@@ -236,36 +74,15 @@ pub fn run() !void {
     var alloc = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = alloc.deinit();
 
+    var level_vl: assets.Level = undefined;
+    var level = &level_vl;
+    try level.init(levels.Level1, &sheet, alloc.allocator());
+
     var self = try Game.init(alloc.allocator());
     defer self.deinit();
 
-    self.stats.fillTextures(&self.textures);
-    self.particles.fillStats(&self.stats);
-
     while (!rl.WindowShouldClose()) {
-        self.player = try self.world.create(self.gpa, .{
-            cms.Stt{&self.stats.player},
-            cms.Pos{.{ 0, 0 }},
-            cms.Vel{vec.zero},
-            try self.createPhy(.{ 0, 0 }, self.stats.player.size),
-            cms.Hlt{ .points = self.stats.player.max_health },
-        });
-
-        const spacing = 50;
-        for (0..10) |i| {
-            for (0..10) |j| {
-                const pos = Vec{ spacing * @as(f32, @floatFromInt(i + 1)), spacing * @as(f32, @floatFromInt(j + 1)) };
-                _ = try self.world.create(self.gpa, .{
-                    cms.Stt{&self.stats.enemy},
-                    cms.Pos{pos + Vec{ 200, 200 }},
-                    cms.Vel{vec.zero},
-                    try self.createPhy(pos, self.stats.enemy.size),
-                    cms.Nmy{},
-                    cms.Hlt{ .points = self.stats.enemy.max_health },
-                    cms.Psr{ .stats = &self.particles.enemy_fire },
-                });
-            }
-        }
+        try level.mount(&self);
 
         while (!rl.WindowShouldClose() and self.world.get(self.player) != null) {
             std.debug.assert(self.arena.reset(.retain_capacity));
@@ -284,11 +101,7 @@ pub fn run() !void {
 }
 
 fn init(gpa: std.mem.Allocator) !Game {
-    var textures: Textures = undefined;
     return .{
-        .sheet = try Textures.init(&textures, gpa),
-        .textures = textures,
-
         .player = undefined,
         .camera = .{ .zoom = 1, .offset = .{ .x = 400, .y = 300 } },
 
@@ -307,20 +120,21 @@ fn deinit(self: *Game) void {
     self.quad.deinit(self.gpa);
 }
 
-fn reset(self: *Game) !void {
+pub fn reset(self: *Game) !void {
     self.world.deinit(self.gpa);
     self.quad.deinit(self.gpa);
     self.world = .{};
     self.quad = try Quad.init(self.gpa, 20);
+    self.player_attacks = .{Attack.none} ** max_attacks;
 }
 
-fn createStats(self: *Game, stats: Stats) !cms.Stt {
+fn createStats(self: *Game, stts: Stats) !cms.Stt {
     const alloc = try self.stat_arena.allocator().create(Stats);
-    alloc.* = stats;
+    alloc.* = stts;
     return cms.Stt{alloc};
 }
 
-fn createPhy(self: *Game, pos: Vec, size: f32) !cms.Phy {
+pub fn createPhy(self: *Game, pos: Vec, size: f32) !cms.Phy {
     return cms.Phy{ .quad = try self.quad.insert(
         self.gpa,
         vec.asInt(pos),
@@ -330,158 +144,99 @@ fn createPhy(self: *Game, pos: Vec, size: f32) !cms.Phy {
 }
 
 fn input(self: *Game) !void {
-    b: {
-        const player = self.world.get(self.player) orelse break :b;
-        const base = player.select(struct { cms.Stt, cms.Vel, cms.Pos }).?;
+    const player = self.world.get(self.player) orelse return;
+    const base = player.select(struct { cms.Stt, cms.Vel, cms.Pos }).?;
 
-        const face = vec.norm(self.mousePos() - base.pos[0]);
+    const face = vec.norm(self.mousePos() - base.pos[0]);
+    const stt = base.stt[0];
 
+    if (base.stt[0].bullet) |b|
         if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT) and
             self.timer(&self.player_reload, player_reload_time))
         {
             try self.createBullet(
-                &self.stats.bullet,
+                b.value,
                 base.stt[0],
-                &self.particles.bullet_trail,
                 base.pos[0],
                 base.vel[0],
                 face,
             );
-        }
-
-        self.camera.target = vec.asRl(base.pos[0]);
-        self.camera.offset = .{
-            .x = @floatFromInt(@divFloor(rl.GetScreenWidth(), 2)),
-            .y = @floatFromInt(@divFloor(rl.GetScreenHeight(), 2)),
         };
 
-        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
-            const trust = face * vec.splat(player_acc * rl.GetFrameTime());
-            base.vel[0] += trust;
+    self.camera.target = vec.asRl(base.pos[0]);
+    self.camera.offset = .{
+        .x = tof(@divFloor(rl.GetScreenWidth(), 2)),
+        .y = tof(@divFloor(rl.GetScreenHeight(), 2)),
+    };
 
-            try self.world.addComp(self.gpa, self.player, cms.Psr{ .stats = &self.particles.fire });
-        } else {
-            _ = try self.world.removeComp(self.gpa, self.player, cms.Psr);
+    if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
+        const trust = face * vec.splat(stt.speed * rl.GetFrameTime());
+        base.vel[0] += trust;
+
+        if (stt.trail) |t| {
+            try self.world.addComp(self.gpa, self.player, cms.Psr{ .stats = t.value });
+        }
+    } else {
+        _ = try self.world.removeComp(self.gpa, self.player, cms.Psr);
+    }
+
+    const screen_height = rl.GetScreenHeight();
+
+    for (&self.player_attacks, 0..) |*at, i| {
+        if (at.trigger == rl.KEY_NULL) break;
+
+        const key_scale = 2;
+        const key_size = 32 * key_scale;
+        const padding = 8;
+
+        var frame_color = rl.WHITE;
+        var charge_color = rl.SKYBLUE;
+
+        if (!rl.IsKeyDown(at.trigger)) {
+            frame_color = rl.GRAY;
+            charge_color.a = 128;
         }
 
-        const Attack = struct {
-            start: u32,
-            proj_timer: u32 = 0,
-            left: bool,
-            proj_counter: u32 = 5,
-            face: Vec,
-            boost_psr: cms.Psr,
-
-            const speed_boost = 4000.0;
-            const duration = 200;
-            const cooldown = 400;
-            const proj_latency = 10;
-
-            var singleton: ?@This() = null;
-
-            fn poll(slf: *@This(), game: *Game, bs: @TypeOf(base)) !bool {
-                if (game.time > slf.start + duration) return true;
-
-                const trust = slf.face * vec.splat(speed_boost * rl.GetFrameTime());
-                bs.vel[0] += trust;
-                const face_ang = vec.ang(slf.face);
-                const playr = game.world.get(game.player).?;
-
-                try game.runPsr(bs, &slf.boost_psr, face_ang, playr);
-
-                if (game.timer(&slf.proj_timer, proj_latency)) {
-                    var side = @as(f32, @floatFromInt(slf.proj_counter));
-                    if (slf.left) side *= -1;
-                    const pface = vec.rad(face_ang + std.math.pi / 30.0 * side, 1);
-                    try game.createBullet(
-                        &game.stats.bullet,
-                        bs.stt[0],
-                        &game.particles.bullet_trail,
-                        bs.pos[0] + pface * vec.splat(30),
-                        bs.vel[0] * vec.splat(0.2),
-                        pface,
-                    );
-
-                    slf.proj_counter += 1;
-                }
-
-                //const face_ang = vec.ang(face);
-                //const stats = self.particles.boost_explosion;
-                //for (0..100) |_| {
-                //    _ = try self.world.create(self.gpa, .{
-                //        cms.Stt{stats.particle},
-                //        cms.Pos{base.pos[0] + vec.unit(face_ang + (std.math.pi * 0.75) + self.prng.random().float(f32) * (std.math.pi / 2.0)) * vec.splat(10 + self.prng.random().float(f32) * 50)},
-                //        cms.Vel{vec.unit(self.prng.random().float(f32) * std.math.tau) * vec.splat(100)},
-                //        cms.Tmp{self.time + stats.particle.lifetime - self.prng.random().int(u32) % stats.lifetime_variation},
-                //        cms.Prt{},
-                //    });
-                //}
-
-                //for (5..15) |i| {
-                //    const pface = vec.rad(face_ang + std.math.phi / 20.0 * @as(f32, @floatFromInt(i)), 1);
-                //    try self.createBullet(
-                //        &self.stats.bullet,
-                //        base.stt[0],
-                //        &self.particles.bullet_trail,
-                //        base.pos[0] + pface * vec.splat(100),
-                //        base.vel[0] * vec.splat(0.2),
-                //        pface,
-                //    );
-
-                //    const kface = vec.rad(face_ang + std.math.phi / 20.0 * -@as(f32, @floatFromInt(i)), 1);
-                //    try self.createBullet(
-                //        &self.stats.bullet,
-                //        base.stt[0],
-                //        &self.particles.bullet_trail,
-                //        base.pos[0] + kface * vec.splat(100),
-                //        base.vel[0] * vec.splat(0.2),
-                //        kface,
-                //    );
-                //}
-                return false;
-            }
+        const frame_pos = Vec{
+            tof(i * (key_size + padding) + padding),
+            tof(screen_height - key_size - padding),
         };
 
-        if (Attack.singleton) |*at| {
-            if (try at.poll(self, base)) {
-                Attack.singleton = null;
-            }
-        }
+        rl.DrawRectangleV(
+            vec.asRl(frame_pos + vec.splat(2)),
+            vec.asRl(Vec{ key_size, tof(key_size) * at.progress(self) } - vec.splat(4)),
+            charge_color,
+        );
 
-        if ((rl.IsKeyDown(rl.KEY_D) or rl.IsKeyDown(rl.KEY_A)) and self.timer(&self.player_boost, Attack.cooldown)) {
-            Attack.singleton = .{
-                .left = rl.IsKeyDown(rl.KEY_A),
-                .start = self.time,
-                .face = face,
-                .boost_psr = cms.Psr{ .stats = &self.particles.boost_explosion },
-            };
-        }
+        drawTexture(&at.texture, frame_pos, key_scale, frame_color);
+
+        try at.tryTrigger(self);
     }
 }
 
-fn createBullet(self: *Game, stats: *const Stats, from: *const Stats, trail: ?*const ParticleStats, origin: Vec, vel: Vec, dir: Vec) !void {
-    const pos = dir * vec.splat(from.size + stats.size) + origin;
-    if (trail) |tr| {
+pub fn createBullet(self: *Game, stts: *const Stats, from: *const Stats, origin: Vec, vel: Vec, dir: Vec) !void {
+    const pos = dir * vec.splat(from.size + stts.size) + origin;
+    if (stts.trail) |tr| {
         _ = try self.world.create(self.gpa, .{
-            cms.Stt{stats},
+            cms.Stt{stts},
             cms.Pos{pos},
-            cms.Vel{dir * vec.splat(stats.speed) + vel},
-            try self.createPhy(pos, stats.size),
+            cms.Vel{dir * vec.splat(stts.speed) + vel},
+            try self.createPhy(pos, stts.size),
             cms.Tmp{self.time + 1000},
-            cms.Psr{ .stats = tr },
+            cms.Psr{ .stats = tr.value },
         });
     } else {
         _ = try self.world.create(self.gpa, .{
-            cms.Stt{stats},
+            cms.Stt{stts},
             cms.Pos{pos},
-            cms.Vel{dir * vec.splat(stats.speed) + vel},
-            try self.createPhy(pos, stats.size),
+            cms.Vel{dir * vec.splat(stts.speed) + vel},
+            try self.createPhy(pos, stts.size),
             cms.Tmp{self.time + 1000},
         });
     }
 }
 
-fn mousePos(self: *Game) Vec {
+pub fn mousePos(self: *Game) Vec {
     return vec.fromRl(rl.GetScreenToWorld2D(rl.GetMousePosition(), self.camera));
 }
 
@@ -520,6 +275,8 @@ fn update(self: *Game) !void {
             while (query.next()) |qid| o: for (self.quad.entities(qid)) |id| {
                 if (id == @as(u64, @bitCast(pb.id.*))) continue;
                 const opb = self.world.selectOne(@bitCast(id), Q).?;
+
+                if (opb.stt[0].team == pb.stt[0].team and pb.stt[0].max_health == 0 and opb.stt[0].max_health == 0) continue;
 
                 const g = pb.stt[0].size + opb.stt[0].size;
 
@@ -612,7 +369,7 @@ fn update(self: *Game) !void {
                 }
 
                 if (target.get(cms.Vel)) |vel| {
-                    const speed = tr.stt[0].bullet.?.speed;
+                    const speed = tr.stt[0].bullet.?.value.speed;
                     const tvel = vel[0];
                     pos = predictTarget(tr.pos[0], pos, tvel, speed) orelse {
                         break :b;
@@ -623,7 +380,7 @@ fn update(self: *Game) !void {
                 tr.trt.rot = vec.ang(dir);
 
                 if (self.timer(&tr.trt.reload, tr.stt[0].reload)) {
-                    try self.createBullet(tr.stt[0].bullet.?, tr.stt[0], null, tr.pos[0], vec.zero, dir);
+                    try self.createBullet(tr.stt[0].bullet.?.value, tr.stt[0], tr.pos[0], vec.zero, dir);
                 }
 
                 continue;
@@ -651,8 +408,12 @@ fn update(self: *Game) !void {
         var nmies = self.world.select(struct { cms.Pos, cms.Nmy, cms.Vel, cms.Stt });
         while (nmies.next()) |nm| {
             if (vec.dist(nm.pos[0], player.pos[0]) > nm.stt[0].sight) continue;
-            nm.vel[0] += vec.norm(player.pos[0] - nm.pos[0]) * vec.splat(400 * delta);
+            nm.vel[0] += vec.norm(player.pos[0] - nm.pos[0]) * vec.splat(nm.stt[0].speed * delta);
         }
+
+        for (&self.player_attacks) |*at| if (at.trigger != rl.KEY_NULL) {
+            try at.tryPoll(self);
+        };
     }
 
     {
@@ -687,7 +448,11 @@ fn draw(self: *Game) !void {
         while (iter.next()) |pt| {
             const rate = divToFloat(self.timeRem(pt.tmp[0]) orelse 0, pt.stt[0].lifetime);
             const color = if (pt.stt[0].fade) rl.ColorAlpha(pt.stt[0].color, rate) else pt.stt[0].color;
-            rl.DrawCircleV(vec.asRl(pt.pos[0]), pt.stt[0].size * rate, color);
+            if (pt.stt[0].texture) |t| {
+                drawCenteredTexture(t.value, pt.pos[0], pt.prt.face, pt.stt[0].scale(), color);
+            } else {
+                rl.DrawCircleV(vec.asRl(pt.pos[0]), pt.stt[0].size * rate, color);
+            }
         }
     }
 
@@ -722,7 +487,7 @@ fn draw(self: *Game) !void {
             }
 
             if (base.stt[0].texture) |tx| {
-                self.drawCenteredTexture(tx, base.pos[0], rot, base.stt[0].scale(), fcolor(1, tone, tone));
+                drawCenteredTexture(tx.value, base.pos[0], rot, base.stt[0].scale(), fcolor(1, tone, tone));
                 if (health_bar_perc != 0) {
                     const end = 360 * health_bar_perc;
                     const size = base.stt[0].size;
@@ -734,11 +499,55 @@ fn draw(self: *Game) !void {
 
             if (pb.get(cms.Trt)) |trt| b: {
                 const tex = base.stt[0].cannon_texture orelse break :b;
-                self.drawCenteredTexture(tex, base.pos[0], trt.rot, base.stt[0].scale(), fcolor(1, tone, tone));
+                drawCenteredTexture(tex.value, base.pos[0], trt.rot, base.stt[0].scale(), fcolor(1, tone, tone));
             }
 
             if (pb.get(cms.Psr)) |psr| try self.runPsr(base, psr, rot, pb);
         };
+
+        for (&self.player_attacks) |*at| if (at.trigger != rl.KEY_NULL) {
+            try at.drawCrossHare(self);
+        };
+
+        const pos = player.pos[0];
+        const tl = vec.fromRl(rl.GetScreenToWorld2D(vec.asRl(vec.zero), self.camera));
+        const r = tof(rl.GetScreenWidth());
+        const b = tof(rl.GetScreenHeight());
+        const br = vec.fromRl(rl.GetScreenToWorld2D(vec.asRl(.{ r, b }), self.camera));
+        const radius = 20;
+        const font_size = 14;
+
+        var dots = std.ArrayList(struct { Vec, usize }).init(self.arena.allocator());
+        var nmys = self.world.select(struct { cms.Pos, cms.Nmy });
+        while (nmys.next()) |el| {
+            const point =
+                intersect(0, el.pos[0], pos, tl[1], tl[0], br[0]) orelse
+                intersect(0, el.pos[0], pos, br[1], tl[0], br[0]) orelse
+                intersect(1, el.pos[0], pos, tl[0], tl[1], br[1]) orelse
+                intersect(1, el.pos[0], pos, br[0], tl[1], br[1]);
+
+            if (point) |p| {
+                for (dots.items) |*op| {
+                    const diameter = radius * 2;
+                    if (vec.dist2(op[0], p) < tof(diameter * diameter)) {
+                        op[1] += 1;
+                        break;
+                    }
+                } else try dots.append(.{ p, 1 });
+            }
+        }
+
+        var buf: [10]u8 = undefined;
+        for (dots.items) |*p| {
+            var allc = std.heap.FixedBufferAllocator.init(&buf);
+            const num = try std.fmt.allocPrintZ(allc.allocator(), "{d}", .{p[1]});
+            const text_size = vec.fromRl(rl.MeasureTextEx(rl.GetFontDefault(), num, font_size, 0)) * vec.splat(0.5);
+            const clamp_size = text_size + vec.splat(4);
+            p[0] = std.math.clamp(p[0], tl + clamp_size, br - clamp_size);
+            rl.DrawCircleV(vec.asRl(p[0]), tof(radius), rl.RED);
+            const point = vec.asInt(p[0] - text_size);
+            rl.DrawText(num, point[0], point[1], font_size, rl.WHITE);
+        }
     }
 
     rl.EndMode2D();
@@ -746,29 +555,29 @@ fn draw(self: *Game) !void {
     rl.DrawFPS(20, 20);
 }
 
-fn runPsr(self: *Game, base: anytype, psr: *cms.Psr, rot: f32, pb: World.Entity) !void {
+pub fn runPsr(self: *Game, base: anytype, psr: *cms.Psr, rot: f32, pb: World.Entity) !void {
     if (!self.timer(&psr.reload, psr.stats.spawn_rate)) return;
 
     const face = vec.unit(rot);
     const offset = switch (psr.stats.offset) {
         .center => vec.zero,
-        .after => face * vec.splat(-base.stt[0].size - if (psr.stats.particle.size > base.stt[0].size) psr.stats.particle.size else 0),
+        .after => face * vec.splat(-base.stt[0].size - if (psr.stats.particle.value.size > base.stt[0].size) psr.stats.particle.value.size else 0),
     };
 
     const vel = if (pb.get(cms.Vel)) |vel| vel[0] else vec.zero;
 
     for (0..psr.stats.batch) |_| {
         _ = try self.world.create(self.gpa, .{
-            cms.Stt{psr.stats.particle},
+            cms.Stt{psr.stats.particle.value},
             cms.Pos{base.pos[0] + offset + vel * vec.splat(rl.GetFrameTime())},
             cms.Vel{vec.unit(self.prng.random().float(f32) * std.math.tau) * vec.splat(psr.stats.init_vel)},
-            cms.Tmp{self.time + psr.stats.particle.lifetime - self.prng.random().int(u32) % psr.stats.lifetime_variation},
-            cms.Prt{},
+            cms.Tmp{self.time + psr.stats.particle.value.lifetime - self.prng.random().int(u32) % psr.stats.lifetime_variation},
+            cms.Prt{ .face = rot },
         });
     }
 }
 
-fn timer(self: *Game, time: *u32, duration: u32) bool {
+pub fn timer(self: *Game, time: *u32, duration: u32) bool {
     if (time.* > self.time) return false;
     time.* = self.time + duration;
     return true;
@@ -791,6 +600,23 @@ fn fcolor(r: f32, g: f32, b: f32) rl.Color {
     };
 }
 
+fn intersect(comptime xd: usize, a: Vec, b: Vec, y: f32, mx: f32, xx: f32) ?Vec {
+    const yd = 1 - xd;
+
+    if ((a[yd] > y) == (b[yd] > y)) return null;
+
+    const cof = (y - b[yd]) / (a[yd] - b[yd]);
+
+    const x = (a[xd] - b[xd]) * cof + b[xd];
+
+    if (x > xx or mx > x) return null;
+
+    var res = vec.zero;
+    res[xd] = x;
+    res[yd] = y;
+    return res;
+}
+
 fn predictTarget(turret: Vec, target: Vec, target_vel: Vec, bullet_speed: f32) ?Vec {
     const rel = target - turret;
     const a = vec.dot(target_vel, target_vel) - bullet_speed * bullet_speed;
@@ -803,14 +629,18 @@ fn predictTarget(turret: Vec, target: Vec, target_vel: Vec, bullet_speed: f32) ?
     return target + target_vel * vec.splat(t);
 }
 
-inline fn drawCenteredTexture(self: *Game, texture: *const Textures.Frame, pos: Vec, rot: f32, scale: f32, color: rl.Color) void {
+inline fn drawTexture(texture: *const assets.Frame, pos: Vec, scale: f32, color: rl.Color) void {
+    const real_width = texture.r.f.width * scale;
+    const real_height = texture.r.f.height * scale;
+    const dst = .{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
+    const origin = .{ .x = 0, .y = 0 };
+    rl.DrawTexturePro(sheet, texture.r.f, dst, origin, 0, color);
+}
+
+inline fn drawCenteredTexture(texture: *const assets.Frame, pos: Vec, rot: f32, scale: f32, color: rl.Color) void {
     const real_width = texture.r.f.width * scale;
     const real_height = texture.r.f.height * scale;
     const dst = .{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
     const origin = .{ .x = real_width / 2, .y = real_height / 2 };
-    rl.DrawTexturePro(self.sheet, texture.r.f, dst, origin, rot / std.math.tau * 360, color);
-}
-
-inline fn tof(value: anytype) f32 {
-    return @floatFromInt(value);
+    rl.DrawTexturePro(sheet, texture.r.f, dst, origin, rot / std.math.tau * 360, color);
 }

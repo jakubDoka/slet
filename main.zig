@@ -7,3 +7,7 @@ pub const rl = @cImport({
 pub fn main() !void {
     try @import("Game.zig").run();
 }
+
+pub inline fn tof(value: anytype) f32 {
+    return @floatFromInt(value);
+}

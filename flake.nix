@@ -36,14 +36,14 @@
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             zigpkgs.default
-	    libGL
-	    wayland
+            libGL
+            wayland
             xorg.libX11.dev
             xorg.libXcursor.dev
             xorg.libXrandr.dev
             xorg.libXi.dev
             xorg.libXinerama.dev
-	    raylib
+            raylib
           ];
         };
 
