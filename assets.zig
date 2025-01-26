@@ -100,10 +100,10 @@ pub const Attack = b: {
             }
         }
 
-        pub fn drawCrossHare(self: *@This(), game: *Game) !void {
-            switch (self.ctor) {
-                inline else => |*v| try v.drawCrossHare(game, self.recharge < game.time),
-            }
+        pub fn crossHarePos(self: *@This(), game: *Game) Vec {
+            return switch (self.ctor) {
+                inline else => |*v| v.crossHarePos(game),
+            };
         }
 
         pub fn tryTrigger(self: *Self, game: *Game) !void {

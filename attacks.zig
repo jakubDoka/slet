@@ -35,16 +35,13 @@ pub const SideSpread = struct {
         self.pos = base.pos[0];
     }
 
-    pub fn drawCrossHare(self: *@This(), game: *Game, loaded: bool) !void {
+    pub fn crossHarePos(self: *@This(), game: *Game) Vec {
         const playr = game.world.get(game.player).?;
         const bs = playr.select(struct { cms.Stt, cms.Vel, cms.Pos }).?;
         const face_ang = vec.ang(game.mousePos() - bs.pos[0]);
         const target_dir: f32 = std.math.pi * target_angle;
         const sign: f32 = if (self.left) -1 else 1;
-        const target_point = bs.pos[0] + vec.rad(face_ang + target_dir * sign, target_distance);
-        var color = rl.SKYBLUE;
-        if (!loaded) color.a = 128;
-        rl.DrawCircleV(vec.asRl(target_point), 5, color);
+        return bs.pos[0] + vec.rad(face_ang + target_dir * sign, target_distance);
     }
 
     pub fn poll(self: *@This(), game: *Game) !void {

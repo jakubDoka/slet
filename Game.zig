@@ -506,7 +506,10 @@ fn draw(self: *Game) !void {
         };
 
         for (&self.player_attacks) |*at| if (at.trigger != rl.KEY_NULL) {
-            try at.drawCrossHare(self);
+            const pos = at.crossHarePos(self);
+            var color = rl.SKYBLUE;
+            if (at.progress(self) != 1) color.a = 128;
+            rl.DrawCircleV(vec.asRl(pos), 5, color);
         };
 
         const pos = player.pos[0];
