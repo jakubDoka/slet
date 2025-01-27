@@ -42,6 +42,9 @@ pub const cms = struct {
     };
     pub const Tmp = struct { u32 };
     pub const Nmy = struct {};
+    pub const Hom = struct {
+        target: Id = .{},
+    };
     pub const Hlt = struct {
         points: u32,
         hit_tween: u32 = 0,
@@ -76,7 +79,7 @@ pub fn run() !void {
 
     var level_vl: assets.Level = undefined;
     var level = &level_vl;
-    try level.init(levels.Level1, &sheet, alloc.allocator());
+    try level.init(levels.DodgeGun, &sheet, alloc.allocator());
 
     var self = try Game.init(alloc.allocator());
     defer self.deinit();
@@ -154,7 +157,7 @@ fn input(self: *Game) !void {
         if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT) and
             self.timer(&self.player_reload, player_reload_time))
         {
-            try self.createBullet(
+            _ = try self.createBullet(
                 b.value,
                 base.stt[0],
                 base.pos[0],
@@ -163,7 +166,7 @@ fn input(self: *Game) !void {
             );
         };
 
-    self.camera.target = vec.asRl(base.pos[0]);
+    self.camera.target = vec.asRl(std.math.lerp(base.pos[0], vec.fromRl(self.camera.target), vec.splat(0.4)));
     self.camera.offset = .{
         .x = tof(@divFloor(rl.GetScreenWidth(), 2)),
         .y = tof(@divFloor(rl.GetScreenHeight(), 2)),
@@ -214,19 +217,19 @@ fn input(self: *Game) !void {
     }
 }
 
-pub fn createBullet(self: *Game, stts: *const Stats, from: *const Stats, origin: Vec, vel: Vec, dir: Vec) !void {
+pub fn createBullet(self: *Game, stts: *const Stats, from: *const Stats, origin: Vec, vel: Vec, dir: Vec) !Id {
     const pos = dir * vec.splat(from.size + stts.size) + origin;
     if (stts.trail) |tr| {
-        _ = try self.world.create(self.gpa, .{
+        return try self.world.create(self.gpa, .{
             cms.Stt{stts},
             cms.Pos{pos},
             cms.Vel{dir * vec.splat(stts.speed) + vel},
             try self.createPhy(pos, stts.size),
-            cms.Tmp{self.time + 1000},
+            cms.Tmp{self.time + stts.lifetime},
             cms.Psr{ .stats = tr.value },
         });
     } else {
-        _ = try self.world.create(self.gpa, .{
+        return try self.world.create(self.gpa, .{
             cms.Stt{stts},
             cms.Pos{pos},
             cms.Vel{dir * vec.splat(stts.speed) + vel},
@@ -274,7 +277,7 @@ fn update(self: *Game) !void {
             var query = self.quad.queryIter(bb, pb.phy.quad);
             while (query.next()) |qid| o: for (self.quad.entities(qid)) |id| {
                 if (id == @as(u64, @bitCast(pb.id.*))) continue;
-                const opb = self.world.selectOne(@bitCast(id), Q).?;
+                const opb = self.world.selectOne(@bitCast(id), Q) orelse continue;
 
                 if (opb.stt[0].team == pb.stt[0].team and pb.stt[0].max_health == 0 and opb.stt[0].max_health == 0) continue;
 
@@ -349,12 +352,19 @@ fn update(self: *Game) !void {
                 }
             }
 
-            inline for (.{ pb, opb }, .{ opb, pb }, .{ b, a }, .{ col.b, col.a }) |p, q, e, i|
+            inline for (.{ pb, opb }, .{ opb, pb }, .{ b, a }, .{ col.b, col.a }) |p, q, e, i| {
+                var apprnded = false;
                 if (p.stt[0].damage > 0 and p.stt[0].team != q.stt[0].team) if (e.get(cms.Hlt)) |hlt| {
                     hlt.points -|= p.stt[0].damage;
                     if (hlt.points == 0) try to_delete.append(i);
                     hlt.hit_tween = self.time + hit_tween_duration;
+                    apprnded = true;
                 };
+
+                if (q.stt[0].explosion != null and !apprnded and p.stt[0].max_health != 0) {
+                    try to_delete.append(i);
+                }
+            }
         }
     }
 
@@ -380,7 +390,7 @@ fn update(self: *Game) !void {
                 tr.trt.rot = vec.ang(dir);
 
                 if (self.timer(&tr.trt.reload, tr.stt[0].reload)) {
-                    try self.createBullet(tr.stt[0].bullet.?.value, tr.stt[0], tr.pos[0], vec.zero, dir);
+                    _ = try self.createBullet(tr.stt[0].bullet.?.value, tr.stt[0], tr.pos[0], vec.zero, dir);
                 }
 
                 continue;
@@ -398,6 +408,46 @@ fn update(self: *Game) !void {
                 if (ls.stt[0].team == tr.stt[0].team) continue;
                 if (vec.dist(ls.pos[0], tr.pos[0]) > tr.stt[0].sight) continue;
                 tr.trt.target = id;
+                break :o;
+            };
+        }
+    }
+
+    {
+        var trts = self.world.select(struct { cms.Pos, cms.Stt, cms.Hom, cms.Vel });
+        while (trts.next()) |hb| {
+            if (self.world.get(hb.hom.target)) |target| b: {
+                const pos = (target.get(cms.Pos) orelse break :b)[0];
+
+                if (vec.dist(pos, hb.pos[0]) > hb.stt[0].sight) {
+                    break :b;
+                }
+
+                //if (target.get(cms.Vel)) |vel| {
+                //    const speed = tr.stt[0].speed;
+                //    const tvel = vel[0];
+                //    pos = predictTarget(tr.pos[0], pos, tvel, speed) orelse {
+                //        break :b;
+                //    };
+                //}
+
+                const dir = vec.norm(pos - hb.pos[0]);
+                hb.vel[0] += dir * vec.splat(hb.stt[0].speed * 2 * delta);
+                continue;
+            }
+            hb.hom.target = .{};
+
+            const pos = vec.asInt(hb.pos[0]);
+            const size: i32 = @intFromFloat(hb.stt[0].sight);
+            const bds = .{ pos[0] - size, pos[1] - size, pos[0] + size, pos[1] + size };
+            var iter = self.quad.queryIter(bds, 0);
+            o: while (iter.next()) |quid| for (self.quad.entities(quid)) |rid| {
+                const id: Id = @bitCast(rid);
+                const target = self.world.get(id) orelse continue;
+                const ls = target.select(struct { cms.Stt, cms.Pos }) orelse continue;
+                if (ls.stt[0].team == hb.stt[0].team) continue;
+                if (vec.dist(ls.pos[0], hb.pos[0]) > hb.stt[0].sight) continue;
+                hb.hom.target = id;
                 break :o;
             };
         }
@@ -432,6 +482,15 @@ fn update(self: *Game) !void {
                 phy.quad,
                 @bitCast(id),
             );
+        if (e.select(struct { cms.Stt, cms.Pos })) |sel| if (sel.stt[0].explosion) |ex| {
+            _ = try self.world.create(self.gpa, .{
+                cms.Stt{&.{}},
+                cms.Psr{ .stats = ex.value },
+                cms.Tmp{self.time + 30},
+                try self.createPhy(sel.pos[0], 0),
+                sel.pos.*,
+            });
+        };
         // TODO: explode
         std.debug.assert(self.world.remove(id));
     }
@@ -573,7 +632,8 @@ pub fn runPsr(self: *Game, base: anytype, psr: *cms.Psr, rot: f32, pb: World.Ent
         _ = try self.world.create(self.gpa, .{
             cms.Stt{psr.stats.particle.value},
             cms.Pos{base.pos[0] + offset + vel * vec.splat(rl.GetFrameTime())},
-            cms.Vel{vec.unit(self.prng.random().float(f32) * std.math.tau) * vec.splat(psr.stats.init_vel)},
+            cms.Vel{vec.unit(self.prng.random().float(f32) * std.math.tau) *
+                vec.splat(psr.stats.init_vel - psr.stats.init_vel_variation * self.prng.random().float(f32))},
             cms.Tmp{self.time + psr.stats.particle.value.lifetime - self.prng.random().int(u32) % psr.stats.lifetime_variation},
             cms.Prt{ .face = rot },
         });

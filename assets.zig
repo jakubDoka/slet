@@ -230,6 +230,7 @@ pub const Stats = struct {
     reload: u32 = 0,
     bullet: ?AssetRef(Stats) = null,
     trail: ?AssetRef(ParticleStats) = null,
+    explosion: ?AssetRef(ParticleStats) = null,
 
     pub fn mass(self: *const @This()) f32 {
         return std.math.pow(f32, self.size, 2) * std.math.pi;
@@ -251,6 +252,7 @@ pub fn AssetRef(comptime T: type) type {
 
 pub const ParticleStats = struct {
     init_vel: f32 = 0,
+    init_vel_variation: f32 = 0,
     offset: enum { after, center } = .center,
     lifetime_variation: u32 = 1,
     spawn_rate: u32 = 0,
