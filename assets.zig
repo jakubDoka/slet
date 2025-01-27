@@ -34,13 +34,15 @@ pub const Level = b: {
             switch (self.spec) {
                 inline else => |*v| {
                     if (@hasField(@TypeOf(v.*), "attacks")) {
+                        const rebinds = .{ rl.KEY_UP, rl.KEY_DOWN };
                         inline for (@typeInfo(@TypeOf(v.attacks)).Struct.fields, 0..) |f, i| {
                             const key = comptime b: {
                                 var name: [f.name.len]u8 = undefined;
                                 _ = std.ascii.upperString(&name, f.name);
                                 break :b @field(rl, &name);
                             };
-                            game.player_attacks[i] = Attack.new(key, @field(v.textures, f.name), @field(v.attacks, f.name));
+                            _ = key; // autofix
+                            game.player_attacks[i] = Attack.new(rebinds[i], @field(v.textures, f.name), @field(v.attacks, f.name));
                         }
                     }
                     try v.mount(game);
