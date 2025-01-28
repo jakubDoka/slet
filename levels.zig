@@ -15,8 +15,8 @@ const cms = Game.cms;
 
 pub const DodgeGun = struct {
     attacks: struct {
-        key_a: attacks.HomingBurst = .{ .left = true },
-        key_d: attacks.HomingBurst = .{ .left = false },
+        key_s: attacks.HomingBurst = .{},
+        //key_d: attacks.HomingBurst = .{ .left = false },
     } = .{},
     textures: struct {
         player: Frame,
@@ -41,7 +41,7 @@ pub const DodgeGun = struct {
         },
         enemy: Stats = .{
             .size = 40,
-            .sight = 1000,
+            .sight = 900,
             .damage = 10,
             .team = 1,
             .fric = 100,
@@ -62,7 +62,7 @@ pub const DodgeGun = struct {
             .texture = .{ .implicit = {} },
         },
         enemy_bullet: Stats = .{
-            .speed = 1000,
+            .speed = 900,
             .team = 1,
             .fric = 0,
             .size = 20,

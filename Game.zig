@@ -11,6 +11,7 @@ prng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0),
 player: Id,
 player_reload: u32 = 0,
 player_attacks: [max_attacks]Attack = .{Attack.none} ** max_attacks,
+bindings: [max_attacks]c_int = .{ rl.KEY_S, rl.KEY_D, rl.KEY_NULL, rl.KEY_NULL },
 camera: rl.Camera2D,
 
 const std = @import("std");
@@ -53,6 +54,7 @@ pub const cms = struct {
     pub const Psr = struct {
         stats: *const ParticleStats,
         reload: u32 = 0,
+        dir: ?ParticleStats.Dir = null,
     };
     pub const Trt = struct {
         rot: f32 = 0,
@@ -151,20 +153,21 @@ fn input(self: *Game) !void {
     const base = player.select(struct { cms.Stt, cms.Vel, cms.Pos }).?;
 
     const face = vec.norm(self.mousePos() - base.pos[0]);
+    _ = face; // autofix
     const stt = base.stt[0];
 
-    if (base.stt[0].bullet) |b|
-        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT) and
-            self.timer(&self.player_reload, player_reload_time))
-        {
-            _ = try self.createBullet(
-                b.value,
-                base.stt[0],
-                base.pos[0],
-                base.vel[0],
-                face,
-            );
-        };
+    //if (base.stt[0].bullet) |b|
+    //    if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT) and
+    //        self.timer(&self.player_reload, player_reload_time))
+    //    {
+    //        _ = try self.createBullet(
+    //            b.value,
+    //            base.stt[0],
+    //            base.pos[0],
+    //            base.vel[0],
+    //            face,
+    //        );
+    //    };
 
     self.camera.target = vec.asRl(std.math.lerp(base.pos[0], vec.fromRl(self.camera.target), vec.splat(0.4)));
     self.camera.offset = .{
@@ -172,21 +175,51 @@ fn input(self: *Game) !void {
         .y = tof(@divFloor(rl.GetScreenHeight(), 2)),
     };
 
-    if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
-        const trust = face * vec.splat(stt.speed * rl.GetFrameTime());
-        base.vel[0] += trust;
+    const dirs = [_]Vec{ .{ 0, -1 }, .{ -1, 0 }, .{ 0, 1 }, .{ 1, 0 } };
+    const keys = [_]c_int{ rl.KEY_W, rl.KEY_A, rl.KEY_S, rl.KEY_D };
 
-        if (stt.trail) |t| {
-            try self.world.addComp(self.gpa, self.player, cms.Psr{ .stats = t.value });
-        }
-    } else {
-        _ = try self.world.removeComp(self.gpa, self.player, cms.Psr);
+    var dir = vec.zero;
+    for (dirs, keys) |d, k| {
+        if (rl.IsKeyDown(k)) dir += d;
     }
+    base.vel[0] += vec.norm(dir) * vec.splat(stt.speed * rl.GetFrameTime());
+
+    //if (rl.IsKeyDown(rl.KEY_S)) {
+    //    const trust = face * vec.splat(stt.speed * rl.GetFrameTime());
+    //    base.vel[0] -= trust;
+
+    //    if (stt.trail) |t| {
+    //        try self.world.addComp(self.gpa, self.player, cms.Psr{ .stats = t.value, .dir = .before });
+    //    }
+    //} else if (rl.IsKeyDown(rl.KEY_W)) {
+    //    const trust = face * vec.splat(stt.speed * rl.GetFrameTime());
+    //    base.vel[0] += trust;
+
+    //    if (stt.trail) |t| {
+    //        try self.world.addComp(self.gpa, self.player, cms.Psr{ .stats = t.value });
+    //    }
+    //} else if (rl.IsKeyDown(rl.KEY_D)) {
+    //    const trust = face * vec.splat(stt.speed * rl.GetFrameTime());
+    //    base.vel[0] += vec.orth(trust);
+
+    //    if (stt.trail) |t| {
+    //        try self.world.addComp(self.gpa, self.player, cms.Psr{ .stats = t.value, .dir = .left });
+    //    }
+    //} else if (rl.IsKeyDown(rl.KEY_A)) {
+    //    const trust = face * vec.splat(stt.speed * rl.GetFrameTime());
+    //    base.vel[0] -= vec.orth(trust);
+
+    //    if (stt.trail) |t| {
+    //        try self.world.addComp(self.gpa, self.player, cms.Psr{ .stats = t.value, .dir = .right });
+    //    }
+    //} else {
+    //    _ = try self.world.removeComp(self.gpa, self.player, cms.Psr);
+    //}
 
     const screen_height = rl.GetScreenHeight();
 
     for (&self.player_attacks, 0..) |*at, i| {
-        if (at.trigger == rl.KEY_NULL) break;
+        if (at.isNone()) break;
 
         const key_scale = 2;
         const key_size = 32 * key_scale;
@@ -195,7 +228,9 @@ fn input(self: *Game) !void {
         var frame_color = rl.WHITE;
         var charge_color = rl.SKYBLUE;
 
-        if (!rl.IsKeyDown(at.trigger)) {
+        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
+            try at.tryTrigger(self);
+        } else {
             frame_color = rl.GRAY;
             charge_color.a = 128;
         }
@@ -211,9 +246,13 @@ fn input(self: *Game) !void {
             charge_color,
         );
 
-        drawTexture(&at.texture, frame_pos, key_scale, frame_color);
+        const text = [_]u8{ @intCast(self.bindings[i]), 0 };
 
-        try at.tryTrigger(self);
+        const pnt = vec.asInt(frame_pos + vec.splat(8));
+        rl.DrawText(&text, pnt[0], pnt[1], 30, frame_color);
+
+        //drawTexture(&at.texture, frame_pos, key_scale, frame_color);
+
     }
 }
 
@@ -461,7 +500,7 @@ fn update(self: *Game) !void {
             nm.vel[0] += vec.norm(player.pos[0] - nm.pos[0]) * vec.splat(nm.stt[0].speed * delta);
         }
 
-        for (&self.player_attacks) |*at| if (at.trigger != rl.KEY_NULL) {
+        for (&self.player_attacks) |*at| if (!at.isNone()) {
             try at.tryPoll(self);
         };
     }
@@ -475,7 +514,7 @@ fn update(self: *Game) !void {
     }
 
     for (to_delete.items) |id| {
-        const e = self.world.get(id).?;
+        const e = self.world.get(id) orelse continue;
         if (e.get(cms.Phy)) |phy|
             self.quad.remove(
                 self.gpa,
@@ -487,7 +526,7 @@ fn update(self: *Game) !void {
                 cms.Stt{&.{}},
                 cms.Psr{ .stats = ex.value },
                 cms.Tmp{self.time + 30},
-                try self.createPhy(sel.pos[0], 0),
+                try self.createPhy(sel.pos[0], 10),
                 sel.pos.*,
             });
         };
@@ -564,11 +603,13 @@ fn draw(self: *Game) !void {
             if (pb.get(cms.Psr)) |psr| try self.runPsr(base, psr, rot, pb);
         };
 
-        for (&self.player_attacks) |*at| if (at.trigger != rl.KEY_NULL) {
+        for (&self.player_attacks, 0..) |*at, i| if (!at.isNone()) {
             const pos = at.crossHarePos(self);
             var color = rl.SKYBLUE;
             if (at.progress(self) != 1) color.a = 128;
-            rl.DrawCircleV(vec.asRl(pos), 5, color);
+            var radius: f32 = 5;
+            if (rl.IsKeyDown(self.bindings[i])) radius *= 2;
+            rl.DrawCircleV(vec.asRl(pos), radius, color);
         };
 
         const pos = player.pos[0];
@@ -621,10 +662,14 @@ pub fn runPsr(self: *Game, base: anytype, psr: *cms.Psr, rot: f32, pb: World.Ent
     if (!self.timer(&psr.reload, psr.stats.spawn_rate)) return;
 
     const face = vec.unit(rot);
-    const offset = switch (psr.stats.offset) {
+    const gap = -base.stt[0].size - if (psr.stats.particle.value.size > base.stt[0].size) psr.stats.particle.value.size else 0;
+    const offset = switch (psr.dir orelse psr.stats.offset) {
         .center => vec.zero,
-        .after => face * vec.splat(-base.stt[0].size - if (psr.stats.particle.value.size > base.stt[0].size) psr.stats.particle.value.size else 0),
-    };
+        .after => face,
+        .before => -face,
+        .left => vec.orth(face),
+        .right => -vec.orth(face),
+    } * vec.splat(gap);
 
     const vel = if (pb.get(cms.Vel)) |vel| vel[0] else vec.zero;
 

@@ -34,15 +34,8 @@ pub const Level = b: {
             switch (self.spec) {
                 inline else => |*v| {
                     if (@hasField(@TypeOf(v.*), "attacks")) {
-                        const rebinds = .{ rl.KEY_UP, rl.KEY_DOWN };
                         inline for (@typeInfo(@TypeOf(v.attacks)).Struct.fields, 0..) |f, i| {
-                            const key = comptime b: {
-                                var name: [f.name.len]u8 = undefined;
-                                _ = std.ascii.upperString(&name, f.name);
-                                break :b @field(rl, &name);
-                            };
-                            _ = key; // autofix
-                            game.player_attacks[i] = Attack.new(rebinds[i], @field(v.textures, f.name), @field(v.attacks, f.name));
+                            game.player_attacks[i] = Attack.new(@field(v.attacks, f.name));
                         }
                     }
                     try v.mount(game);
@@ -55,8 +48,6 @@ pub const Level = b: {
 pub const Attack = b: {
     const State = DeclEnum(attacks);
     break :b struct {
-        trigger: c_int,
-        texture: Frame,
         cooldown: u32,
         duration: u32,
         ctor: State,
@@ -68,17 +59,17 @@ pub const Attack = b: {
         const Self = @This();
 
         pub const none = Attack{
-            .trigger = rl.KEY_NULL,
-            .texture = undefined,
-            .cooldown = 0,
+            .cooldown = std.math.maxInt(u32),
             .duration = 0,
             .ctor = undefined,
         };
 
-        pub fn new(trigger: c_int, texture: Frame, instance: anytype) Self {
+        pub fn isNone(self: *const Self) bool {
+            return self.cooldown == std.math.maxInt(u32);
+        }
+
+        pub fn new(instance: anytype) Self {
             return .{
-                .trigger = trigger,
-                .texture = texture,
                 .cooldown = @TypeOf(instance).cooldown,
                 .duration = @TypeOf(instance).duration,
                 .ctor = declToDeclEnum(attacks, instance),
@@ -109,7 +100,7 @@ pub const Attack = b: {
         }
 
         pub fn tryTrigger(self: *Self, game: *Game) !void {
-            if (rl.IsKeyDown(self.trigger) and game.timer(&self.recharge, self.cooldown)) {
+            if (game.timer(&self.recharge, self.cooldown)) {
                 self.state = self.ctor;
                 self.start = game.time;
                 switch (self.state.?) {
@@ -253,9 +244,10 @@ pub fn AssetRef(comptime T: type) type {
 }
 
 pub const ParticleStats = struct {
+    pub const Dir = enum { after, center, before, left, right };
     init_vel: f32 = 0,
     init_vel_variation: f32 = 0,
-    offset: enum { after, center } = .center,
+    offset: Dir = .center,
     lifetime_variation: u32 = 1,
     spawn_rate: u32 = 0,
     batch: u32 = 1,

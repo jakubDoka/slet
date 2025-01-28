@@ -18,10 +18,10 @@ const TypeMeta = packed struct(u32) {
 
 pub fn World(comptime Comps: type) type {
     return struct {
-        archetypes: std.MultiArrayList(Archetype) = .{},
         entities: std.ArrayListUnmanaged(Slot) = .{},
-        lane_arena: std.heap.ArenaAllocator.State = .{},
         free_head: u32 = Slot.Data.null_free,
+        archetypes: std.MultiArrayList(Archetype) = .{},
+        lane_arena: std.heap.ArenaAllocator.State = .{},
 
         const Self = @This();
 
