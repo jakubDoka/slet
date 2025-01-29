@@ -11,7 +11,7 @@ const Vec = vec.T;
 const Stats = assets.Stats;
 const ParticleStats = assets.ParticleStats;
 const Frame = assets.Frame;
-const cms = Game.cms;
+const cms = Game.Ents;
 
 pub const DodgeGun = struct {
     attacks: struct {

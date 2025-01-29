@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
     });
     exe.linkLibrary(raylib_artifact);
+    exe.linkLibC();
 
     const runa = b.addRunArtifact(exe);
     const runnner = b.step("run", "run the game");

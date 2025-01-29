@@ -6,110 +6,110 @@ const levels = @import("levels.zig");
 const vec = @import("vec.zig");
 const Game = @import("Game.zig");
 const Vec = vec.T;
-const cms = Game.cms;
+const cms = Game.Ents;
 const tof = @import("main.zig").tof;
 
-pub const Frame = resources.sprites.Frame;
+pub const Frame = rl.Rectangle;
 
-pub const Level = b: {
-    const Spec = DeclEnum(levels);
-    break :b struct {
-        spec: Spec,
-
-        const Self = @This();
-
-        pub fn init(slot: *Self, comptime L: type, sheet: *rl.Texture2D, gpa: std.mem.Allocator) !void {
-            slot.* = .{
-                .spec = declToDeclEnum(levels, @as(L, undefined)),
-            };
-
-            const level = &@field(slot.spec, declToName(levels, L));
-            level.* = L{};
-            resolveRefs(level, level, "", &.{});
-            sheet.* = try initTextures(&level.textures, gpa);
-        }
-
-        pub fn mount(self: *const Self, game: *Game) !void {
-            try game.reset();
-            switch (self.spec) {
-                inline else => |*v| {
-                    if (@hasField(@TypeOf(v.*), "attacks")) {
-                        inline for (@typeInfo(@TypeOf(v.attacks)).Struct.fields, 0..) |f, i| {
-                            game.player_attacks[i] = Attack.new(@field(v.attacks, f.name));
-                        }
-                    }
-                    try v.mount(game);
-                },
-            }
-        }
-    };
-};
-
-pub const Attack = b: {
-    const State = DeclEnum(attacks);
-    break :b struct {
-        cooldown: u32,
-        duration: u32,
-        ctor: State,
-
-        recharge: u32 = 0,
-        start: u32 = 0,
-        state: ?State = null,
-
-        const Self = @This();
-
-        pub const none = Attack{
-            .cooldown = std.math.maxInt(u32),
-            .duration = 0,
-            .ctor = undefined,
-        };
-
-        pub fn isNone(self: *const Self) bool {
-            return self.cooldown == std.math.maxInt(u32);
-        }
-
-        pub fn new(instance: anytype) Self {
-            return .{
-                .cooldown = @TypeOf(instance).cooldown,
-                .duration = @TypeOf(instance).duration,
-                .ctor = declToDeclEnum(attacks, instance),
-            };
-        }
-
-        pub fn progress(self: *const Self, game: *const Game) f32 {
-            return 1.0 - tof(self.recharge -| game.time) / tof(self.cooldown);
-        }
-
-        pub fn tryPoll(self: *Self, game: *Game) !void {
-            if (self.state) |*s| {
-                if (self.start + self.duration < game.time) {
-                    self.state = null;
-                    return;
-                }
-
-                switch (s.*) {
-                    inline else => |*v| try v.poll(game),
-                }
-            }
-        }
-
-        pub fn crossHarePos(self: *@This(), game: *Game) Vec {
-            return switch (self.ctor) {
-                inline else => |*v| v.crossHarePos(game),
-            };
-        }
-
-        pub fn tryTrigger(self: *Self, game: *Game) !void {
-            if (game.timer(&self.recharge, self.cooldown)) {
-                self.state = self.ctor;
-                self.start = game.time;
-                switch (self.state.?) {
-                    inline else => |*v| if (@hasDecl(@TypeOf(v.*), "init")) try v.init(game),
-                }
-            }
-        }
-    };
-};
+//pub const Level = b: {
+//    const Spec = DeclEnum(levels);
+//    break :b struct {
+//        spec: Spec,
+//
+//        const Self = @This();
+//
+//        pub fn init(slot: *Self, comptime L: type, sheet: *rl.Texture2D, gpa: std.mem.Allocator) !void {
+//            slot.* = .{
+//                .spec = declToDeclEnum(levels, @as(L, undefined)),
+//            };
+//
+//            const level = &@field(slot.spec, declToName(levels, L));
+//            level.* = L{};
+//            resolveRefs(level, level, "", &.{});
+//            sheet.* = try initTextures(&level.textures, gpa);
+//        }
+//
+//        pub fn mount(self: *const Self, game: *Game) !void {
+//            try game.reset();
+//            switch (self.spec) {
+//                inline else => |*v| {
+//                    if (@hasField(@TypeOf(v.*), "attacks")) {
+//                        inline for (@typeInfo(@TypeOf(v.attacks)).Struct.fields, 0..) |f, i| {
+//                            game.player_attacks[i] = Attack.new(@field(v.attacks, f.name));
+//                        }
+//                    }
+//                    try v.mount(game);
+//                },
+//            }
+//        }
+//    };
+//};
+//
+//pub const Attack = b: {
+//    const State = DeclEnum(attacks);
+//    break :b struct {
+//        cooldown: u32,
+//        duration: u32,
+//        ctor: State,
+//
+//        recharge: u32 = 0,
+//        start: u32 = 0,
+//        state: ?State = null,
+//
+//        const Self = @This();
+//
+//        pub const none = Attack{
+//            .cooldown = std.math.maxInt(u32),
+//            .duration = 0,
+//            .ctor = undefined,
+//        };
+//
+//        pub fn isNone(self: *const Self) bool {
+//            return self.cooldown == std.math.maxInt(u32);
+//        }
+//
+//        pub fn new(instance: anytype) Self {
+//            return .{
+//                .cooldown = @TypeOf(instance).cooldown,
+//                .duration = @TypeOf(instance).duration,
+//                .ctor = declToDeclEnum(attacks, instance),
+//            };
+//        }
+//
+//        pub fn progress(self: *const Self, game: *const Game) f32 {
+//            return 1.0 - tof(self.recharge -| game.time) / tof(self.cooldown);
+//        }
+//
+//        pub fn tryPoll(self: *Self, game: *Game) !void {
+//            if (self.state) |*s| {
+//                if (self.start + self.duration < game.time) {
+//                    self.state = null;
+//                    return;
+//                }
+//
+//                switch (s.*) {
+//                    inline else => |*v| try v.poll(game),
+//                }
+//            }
+//        }
+//
+//        pub fn crossHarePos(self: *@This(), game: *Game) Vec {
+//            return switch (self.ctor) {
+//                inline else => |*v| v.crossHarePos(game),
+//            };
+//        }
+//
+//        pub fn tryTrigger(self: *Self, game: *Game) !void {
+//            if (game.timer(&self.recharge, self.cooldown)) {
+//                self.state = self.ctor;
+//                self.start = game.time;
+//                switch (self.state.?) {
+//                    inline else => |*v| if (@hasDecl(@TypeOf(v.*), "init")) try v.init(game),
+//                }
+//            }
+//        }
+//    };
+//};
 
 pub fn declToName(comptime D: type, comptime T: type) [:0]const u8 {
     return for (@typeInfo(D).Struct.decls) |d| {
@@ -153,7 +153,7 @@ pub fn DeclEnum(comptime T: type) type {
     } });
 }
 
-fn initTextures(self: anytype, gpa: std.mem.Allocator) !rl.Texture2D {
+pub fn initTextures(self: anytype, gpa: std.mem.Allocator, sheet_size: u32) !rl.Texture2D {
     const info = @typeInfo(@TypeOf(self.*)).Struct;
     var images: [info.fields.len]rl.Image = undefined;
     inline for (info.fields, &images) |field, *i| {
@@ -161,8 +161,14 @@ fn initTextures(self: anytype, gpa: std.mem.Allocator) !rl.Texture2D {
         i.* = rl.LoadImageFromMemory(".png", data, data.len);
     }
 
-    const frames: *[info.fields.len]Frame = @ptrCast(self);
-    return try resources.sprites.pack(gpa, &images, frames, 128);
+    var frames: [info.fields.len]resources.sprites.Frame = undefined;
+    const sheet = try resources.sprites.pack(gpa, &images, &frames, sheet_size);
+
+    const frame_view: *[info.fields.len]Frame = @ptrCast(self);
+
+    for (frame_view, frames) |*d, f| d.* = f.r.f;
+
+    return sheet;
 }
 
 pub fn resolveRefs(

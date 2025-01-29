@@ -85,6 +85,35 @@ pub fn clamp(a: T, max_len: f32) T {
     return a;
 }
 
+pub fn intersect(comptime xd: usize, a: T, b: T, y: f32, mx: f32, xx: f32) ?T {
+    const yd = 1 - xd;
+
+    if ((a[yd] > y) == (b[yd] > y)) return null;
+
+    const cof = (y - b[yd]) / (a[yd] - b[yd]);
+
+    const x = (a[xd] - b[xd]) * cof + b[xd];
+
+    if (x > xx or mx > x) return null;
+
+    var res = zero;
+    res[xd] = x;
+    res[yd] = y;
+    return res;
+}
+
+pub fn predictTarget(turret: T, target: T, target_vel: T, bullet_speed: f32) ?T {
+    const rel = target - turret;
+    const a = dot(target_vel, target_vel) - bullet_speed * bullet_speed;
+    if (a == 0) return target;
+    const b = 2 * dot(target_vel, rel);
+    const c = dot(rel, rel);
+    const d = b * b - 4 * a * c;
+    if (d < 0) return null;
+    const t = (-b - std.math.sqrt(d)) / (2 * a);
+    return target + target_vel * splat(t);
+}
+
 test "projection" {
     const a = T{ 1.0, 2.0 };
     const b = T{ 3.0, 4.0 };
