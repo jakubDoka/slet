@@ -60,7 +60,7 @@ pub fn World(comptime Ents: type) type {
             const raw = RawId.fromId(id);
             switch (@as(EntKind, @enumFromInt(raw.version.kind))) {
                 inline else => |t| if (@hasDecl(std.meta.TagPayload(Ents, t), @tagName(tag))) {
-                    return @call(.always_inline, @field(std.meta.TagPayload(Ents, t), @tagName(tag)), .{self.get(id, t).?} ++ args);
+                    return @call(.always_inline, @field(std.meta.TagPayload(Ents, t), @tagName(tag)), .{self.get(id, t) orelse return} ++ args);
                 },
             }
 

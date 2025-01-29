@@ -225,11 +225,11 @@ pub const Bullet = struct {
     }
 
     pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {
-        _ = self; // autofix
         const health = game.world.field(other, .health) orelse return;
         health.points -|= damage;
         health.hit_tween = game.time + hit_tween_duration;
         if (health.points == 0) game.queueDelete(other);
+        self.vel *= vec.splat(1.3);
     }
 };
 

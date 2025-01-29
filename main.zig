@@ -16,7 +16,7 @@ const Quad = @import("QuadTree.zig");
 const Level1 = @import("Level1.zig");
 
 pub fn main() !void {
-    rl.SetConfigFlags(rl.FLAG_FULLSCREEN_MODE);
+    rl.SetConfigFlags(rl.FLAG_FULLSCREEN_MODE | rl.FLAG_WINDOW_RESIZABLE);
     rl.SetTargetFPS(60);
 
     rl.InitWindow(0, 0, "slet");
