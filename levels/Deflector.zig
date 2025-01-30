@@ -153,7 +153,7 @@ pub const Turret = struct {
     pub const size: f32 = 40;
     pub const team: u32 = 1;
     pub const damage: u32 = 10;
-    pub const sight: f32 = 1000;
+    pub const sight: f32 = 700;
     pub const turret_speed: f32 = std.math.tau;
     pub const Bullet = Self.EnemyBullet;
 
@@ -302,7 +302,7 @@ pub fn init(self: *Engine) void {
     self.player = self.world.add(Player{ .reload = self.time + 100 });
     self.initPhy(self.player, Player);
 
-    const trt = self.world.add(Turret{ .pos = .{ 800, 800 } });
+    const trt = self.world.add(Turret{ .pos = .{ 600, 600 } });
     self.initPhy(trt, Turret);
 }
 
