@@ -327,5 +327,6 @@ pub fn update(self: *Engine) bool {
     self.folowWithCamera(player.pos, 0.49);
     self.killTemporaryEnts();
 
-    return self.world.ents.turret.items.len == 0;
+    return self.world.ents.turret.items.len == 0 and
+        self.world.ents.enemy_bullet.items.len == 0;
 }
