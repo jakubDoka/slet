@@ -9,46 +9,107 @@ const ecs = @import("ecs.zig");
 const vec = @import("vec.zig");
 const engine = @import("engine.zig");
 const assets = @import("assets.zig");
+const levels = @import("zig-out/levels.zig");
 
 const Id = ecs.Id;
 const Vec = vec.T;
 const Quad = @import("QuadTree.zig");
-const Level1 = @import("Level1.zig");
+
+const UiTextures = struct {};
+
+const State = union(enum) {
+    Levels: void,
+    Playing: Level,
+};
 
 pub fn main() !void {
-    rl.SetConfigFlags(rl.FLAG_FULLSCREEN_MODE | rl.FLAG_WINDOW_RESIZABLE);
+    rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE);
     rl.SetTargetFPS(60);
 
-    rl.InitWindow(0, 0, "slet");
+    rl.InitWindow(800, 600, "slet");
     defer rl.CloseWindow();
 
-    var alloc = std.heap.GeneralPurposeAllocator(.{}){
-        .backing_allocator = std.heap.c_allocator,
-    };
+    var alloc = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = alloc.deinit();
 
-    //var ent = ecs.World(Spec.Ents){ .gpa = alloc.allocator() };
-    //const foo = ent.add(.player, .{});
-    //_ = foo; // autofix
+    var state = State{ .Levels = {} };
 
-    var level = engine.level(Level1, alloc.allocator());
-    defer level.deinit();
-    level.run();
-}
+    while (!rl.WindowShouldClose()) switch (state) {
+        .Levels => {
+            rl.BeginDrawing();
+            defer rl.EndDrawing();
+            rl.ClearBackground(rl.BLACK);
+            const mouse_pos = vec.fromRl(rl.GetMousePosition());
+            var cursor = vec.splat(10);
+            const font_size, const padding, const margin, const spacing = .{ 25, 10, 10, 2 };
+            for (level_list) |l| {
+                const text_size = vec.fromRl(rl.MeasureTextEx(rl.GetFontDefault(), l.name, font_size, spacing));
+                const size = text_size + vec.splat(padding * 2);
+                const text_pos = cursor + vec.splat(padding);
 
-pub inline fn tof(value: anytype) f32 {
-    return @floatFromInt(value);
-}
+                var color = rl.GRAY;
+                if (@reduce(.And, mouse_pos >= cursor) and @reduce(.And, mouse_pos <= cursor + size)) {
+                    if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
+                        state = .{ .Playing = l };
+                        continue;
+                    } else {
+                        color = rl.BROWN;
+                    }
+                }
 
-pub fn divToFloat(a: anytype, b: @TypeOf(a)) f32 {
-    return @as(f32, @floatFromInt(a)) / @as(f32, @floatFromInt(b));
-}
-
-pub fn fcolor(r: f32, g: f32, b: f32) rl.Color {
-    return .{
-        .r = @intFromFloat(r * 255),
-        .g = @intFromFloat(g * 255),
-        .b = @intFromFloat(b * 255),
-        .a = 255,
+                rl.DrawRectangleV(vec.asRl(cursor), vec.asRl(size), color);
+                rl.DrawTextEx(rl.GetFontDefault(), l.name, vec.asRl(text_pos), font_size, spacing, rl.WHITE);
+                cursor[0] += size[0] + margin;
+            }
+        },
+        .Playing => |l| {
+            l.run(alloc.allocator());
+            // reset rl.WindowShouldClose
+            rl.BeginDrawing();
+            rl.EndDrawing();
+            state = .{ .Levels = {} };
+        },
     };
+
+    level_list[0].run(alloc.allocator());
 }
+
+const Level = struct {
+    name: [:0]const u8,
+    run: *const fn (std.mem.Allocator) void,
+};
+
+const level_list = b: {
+    const decls = @typeInfo(levels).Struct.decls;
+
+    var list: [decls.len]Level = undefined;
+    for (decls, &list) |d, *l| {
+        const name = n: {
+            var buf: [64]u8 = undefined;
+            var i = 0;
+            for (d.name) |c| {
+                if (std.ascii.isUpper(c) and i != 0) {
+                    buf[i] = ' ';
+                    i += 1;
+                }
+                buf[i] = std.ascii.toLower(c);
+                i += 1;
+            }
+            buf[i] = 0;
+            break :n buf[0..i] ++ "";
+        };
+
+        l.* = .{
+            .name = name,
+            .run = struct {
+                fn run(gpa: std.mem.Allocator) void {
+                    var level = engine.level(levels.DodgeGun, gpa);
+                    defer level.deinit();
+                    level.run();
+                }
+            }.run,
+        };
+    }
+
+    break :b list;
+};

@@ -60,7 +60,7 @@ pub fn World(comptime Ents: type) type {
             const raw = RawId.fromId(id);
             switch (@as(EntKind, @enumFromInt(raw.version.kind))) {
                 inline else => |t| if (@hasDecl(std.meta.TagPayload(Ents, t), @tagName(tag))) {
-                    return @call(.always_inline, @field(std.meta.TagPayload(Ents, t), @tagName(tag)), .{self.get(id, t) orelse return} ++ args);
+                    return @call(.always_inline, @field(std.meta.TagPayload(Ents, t), @tagName(tag)), .{self.get(id, std.meta.TagPayload(Ents, t)) orelse return} ++ args);
                 },
             }
 
@@ -85,7 +85,7 @@ pub fn World(comptime Ents: type) type {
 
         pub fn cnst(id: Id, comptime tag: anytype) CnstType(tag) {
             const table = comptime b: {
-                var tbl: [@typeInfo(Ents).Union.fields.len]CnstType(tag) = undefined;
+                var tbl = [_]CnstType(tag){0} ** @typeInfo(Ents).Union.fields.len;
                 for (@typeInfo(Ents).Union.fields, &tbl) |e, *t| {
                     if (@hasDecl(e.type, @tagName(tag))) t.* = @field(e.type, @tagName(tag));
                 }
@@ -96,14 +96,29 @@ pub fn World(comptime Ents: type) type {
             return table[RawId.fromId(id).version.kind];
         }
 
-        pub fn get(self: *Self, id: Id, comptime tag: EntKind) ?*std.meta.TagPayload(Ents, tag) {
+        pub fn isValid(self: *Self, id: Id) bool {
+            const raw = RawId.fromId(id);
+            return raw.version.eql(self.slots.items[raw.index].version);
+        }
+
+        pub fn get(self: *Self, id: Id, comptime T: type) ?*T {
+            const tag = comptime tagForPayload(T);
             const raw = RawId.fromId(id);
             std.debug.assert(@intFromEnum(tag) == raw.version.kind);
             if (!raw.version.eql(self.slots.items[raw.index].version)) return null;
             return &@field(self.ents, @tagName(tag)).items[self.slots.items[raw.index].index];
         }
 
-        pub fn add(self: *Self, comptime tag: EntKind, value: std.meta.TagPayload(Ents, tag)) Id {
+        pub fn tagForPayload(comptime P: type) EntKind {
+            for (@typeInfo(Ents).Union.fields, 0..) |f, i| {
+                if (f.type == P) return @enumFromInt(i);
+            }
+
+            @compileError("wah");
+        }
+
+        pub fn add(self: *Self, value: anytype) Id {
+            const tag = comptime tagForPayload(@TypeOf(value));
             const arch = @tagName(tag);
             const loc = @field(self.ents, arch).addOne(self.gpa) catch unreachable;
             loc.* = value;

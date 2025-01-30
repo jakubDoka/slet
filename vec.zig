@@ -5,6 +5,25 @@ pub const T = @Vector(2, f32);
 
 pub const zero = T{ 0, 0 };
 
+pub const dirs = [_]T{ .{ 0, -1 }, .{ -1, 0 }, .{ 0, 1 }, .{ 1, 0 } };
+
+pub inline fn tof(value: anytype) f32 {
+    return @floatFromInt(value);
+}
+
+pub fn divToFloat(a: anytype, b: @TypeOf(a)) f32 {
+    return @as(f32, @floatFromInt(a)) / @as(f32, @floatFromInt(b));
+}
+
+pub fn fcolor(r: f32, g: f32, b: f32) rl.Color {
+    return .{
+        .r = @intFromFloat(r * 255),
+        .g = @intFromFloat(g * 255),
+        .b = @intFromFloat(b * 255),
+        .a = 255,
+    };
+}
+
 pub fn fromRl(v: rl.Vector2) T {
     return @bitCast(v);
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const ecs = @import("ecs.zig");
+const rl = @import("main.zig").rl;
 
 const Quad = @import("QuadTree.zig");
 const Id = ecs.Id;
@@ -12,6 +13,52 @@ pub fn Level(comptime Spec: type) type {
 
 const ColisionRec = struct { a: Id, b: Id, t: f32 };
 
+pub fn PackEnts(comptime S: type) type {
+    const decls = @typeInfo(S).Struct.decls;
+
+    var enum_buf: [decls.len]std.builtin.Type.EnumField = undefined;
+    var var_buf: [decls.len]std.builtin.Type.UnionField = undefined;
+    var count = 0;
+    for (decls) |d| {
+        const value = @field(S, d.name);
+        if (@TypeOf(value) != type) continue;
+        if (@typeInfo(value) != .Struct) continue;
+        if (@typeInfo(value).Struct.fields.len == 0) continue;
+        if (!std.meta.eql(@typeInfo(value).Struct.fields[0], @typeInfo(struct { id: Id = undefined }).Struct.fields[0])) continue;
+
+        const name = b: {
+            var buf: [64]u8 = undefined;
+            var i = 0;
+            for (d.name) |c| {
+                if (std.ascii.isUpper(c) and i != 0) {
+                    buf[i] = '_';
+                    i += 1;
+                }
+                buf[i] = std.ascii.toLower(c);
+                i += 1;
+            }
+            buf[i] = 0;
+            break :b buf[0..i :0];
+        };
+
+        enum_buf[count] = .{ .name = name, .value = count };
+        var_buf[count] = .{ .name = name, .type = value, .alignment = @alignOf(value) };
+        count += 1;
+    }
+
+    return @Type(.{ .Union = .{
+        .layout = .auto,
+        .tag_type = @Type(.{ .Enum = .{
+            .tag_type = std.math.IntFittingRange(0, count - 1),
+            .fields = enum_buf[0..count],
+            .decls = &.{},
+            .is_exhaustive = true,
+        } }),
+        .fields = var_buf[0..count],
+        .decls = &.{},
+    } });
+}
+
 pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
     sheet: rl.Texture2D = undefined,
     spec: Spec = .{},
@@ -19,6 +66,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
     quad: Quad,
 
     time: u32 = 0,
+    boot_time: u32 = 0,
     prng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0),
     player: Id = undefined,
     camera: rl.Camera2D = .{ .zoom = 1, .offset = .{ .x = 400, .y = 300 } },
@@ -28,15 +76,14 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
     gpa: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
 
-    const rl = @import("main.zig").rl;
     const vec = @import("vec.zig");
-    const tof = @import("main.zig").tof;
 
     const Self = @This();
     const Vec = vec.T;
-    const World = ecs.World(Spec.Ents);
+    const Ents = PackEnts(Spec);
+    const World = ecs.World(Ents);
 
-    pub const Hralth = struct {
+    pub const Health = struct {
         points: u32,
         hit_tween: u32 = 0,
 
@@ -44,16 +91,25 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
             var tone: f32 = 1;
 
             if (game.timeRem(self.hit_tween)) |n| {
-                tone -= @import("main.zig").divToFloat(n, Spec.hit_tween_duration);
+                tone -= vec.divToFloat(n, Spec.hit_tween_duration);
             }
 
             if (self.points != @TypeOf(ctx.*).max_health) {
-                const end = 360 * @import("main.zig").divToFloat(self.points, @TypeOf(ctx.*).max_health);
+                const end = 360 * vec.divToFloat(self.points, @TypeOf(ctx.*).max_health);
                 const size = @TypeOf(ctx.*).size;
                 rl.DrawRing(vec.asRl(ctx.pos), size + 5, size + 8, 0.0, end, 50, rl.GREEN);
             }
 
             return tone;
+        }
+
+        pub fn takeDamage(self: *@This(), from: anytype, self_ref: Id, game: *Self) bool {
+            if (World.cnst(self_ref, .team) == @TypeOf(from.*).team) return false;
+            self.points -|= @TypeOf(from.*).damage;
+            self.hit_tween = game.time + Spec.hit_tween_duration;
+            const died = self.points == 0;
+            if (died) game.queueDelete(self_ref);
+            return died;
         }
     };
 
@@ -69,7 +125,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
 
         pub fn update(self: *@This(), ctx: anytype, game: *Self) void {
             const bullet_tag = .enemy_bullet;
-            const Bullet = std.meta.TagPayload(Spec.Ents, bullet_tag);
+            const Bullet = std.meta.TagPayload(Ents, bullet_tag);
 
             if (self.target != Id.invalid) if (game.world.field(self.target, .pos)) |target| b: {
                 var pos = target.*;
@@ -86,12 +142,12 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
                 self.rot = vec.ang(dir);
 
                 if (game.timer(&self.reload, @TypeOf(ctx.*).reload)) {
-                    const bull = game.world.add(bullet_tag, .{
+                    const bull = game.world.add(Bullet{
                         .pos = ctx.pos,
                         .vel = ctx.vel + vec.rad(self.rot, Bullet.speed),
                         .live_until = game.time + Bullet.lifetime,
                     });
-                    game.initPhy(bull, bullet_tag);
+                    game.initPhy(bull, Bullet);
                 }
 
                 return;
@@ -108,7 +164,8 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
         var iter = self.quad.queryIter(bds, 0);
         while (iter.next()) |quid| for (self.quad.entities(quid)) |rid| {
             const id: Id = @enumFromInt(rid);
-            if (World.cnst(ctx.id, .team) == World.cnst(id, .team)) continue;
+            if (@TypeOf(ctx.*).team == World.cnst(id, .team)) continue;
+            if (World.cnst(id, .max_health) == 0) continue;
             const opos = (self.world.field(id, .pos) orelse continue).*;
             if (vec.dist(opos, ctx.pos) > @TypeOf(ctx.*).sight) continue;
             return id;
@@ -148,8 +205,8 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
         self.* = undefined;
     }
 
-    pub fn initPhy(self: *Self, id: Id, comptime tag: anytype) void {
-        const ent = self.world.get(id, tag).?;
+    pub fn initPhy(self: *Self, id: Id, comptime T: type) void {
+        const ent = self.world.get(id, T).?;
         ent.phys.quad = self.quad.insert(
             self.gpa,
             vec.asInt(ent.pos),
@@ -159,19 +216,31 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
     }
 
     pub fn run(self: *Self) void {
-        while (!rl.WindowShouldClose()) {
-            Spec.init(self);
+        self.sheet = assets.initTextures(&self.spec.textures, self.gpa, 128) catch unreachable;
 
-            while (!rl.WindowShouldClose() and self.world.get(self.player, .player) != null) {
+        while (true) {
+            {
+                self.time = @intFromFloat(rl.GetTime() * 1000);
+                self.boot_time = self.time;
+                Spec.init(self);
+                const player = self.world.get(self.player, Player).?;
+                self.folowWithCamera(player.pos, 0);
+            }
+
+            while (self.world.isValid(self.player)) {
+                if (rl.WindowShouldClose()) return;
+
                 std.debug.assert(self.arena.reset(.retain_capacity));
                 self.time = @intFromFloat(rl.GetTime() * 1000);
 
-                self.update();
+                if (self.update()) break;
                 self.input();
 
                 rl.BeginDrawing();
                 defer rl.EndDrawing();
                 self.draw();
+
+                if (rl.IsKeyPressed(rl.KEY_R)) break;
             }
 
             self.reset();
@@ -180,6 +249,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
 
     pub fn reset(self: *Self) void {
         if (@hasDecl(Spec, "reset")) Spec.reset(self);
+        self.player = undefined;
         self.world.deinit();
         self.quad.deinit(self.gpa);
         self.world = .{ .gpa = self.gpa };
@@ -187,29 +257,35 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
         self.prng = std.Random.DefaultPrng.init(0);
     }
 
-    pub fn update(self: *Self) void {
+    pub fn update(self: *Self) bool {
         self.world.invokeForAll(.update, .{self});
-        if (@hasDecl(Spec, "update")) Spec.update(self);
+        var finished = false;
+        if (@hasDecl(Spec, "update")) finished = Spec.update(self);
+
+        if (@hasDecl(Spec, "time_limit") and
+            self.timeRem(self.boot_time + Spec.time_limit) == null) finished = true;
 
         for (self.to_delete.items) |id| {
             _ = self.world.invoke(id, .onDelete, .{self});
             if (self.world.field(id, .phys)) |phys| {
                 self.quad.remove(self.gpa, phys.quad, @intFromEnum(id));
             }
-            std.debug.assert(self.world.remove(id));
+            _ = self.world.remove(id);
         }
         self.to_delete.items.len = 0;
+
+        return finished;
     }
 
     pub fn queueDelete(self: *Self, id: Id) void {
         self.to_delete.append(id) catch unreachable;
     }
 
-    pub fn folowWithCamera(self: *Self, pos: Vec) void {
-        self.camera.target = vec.asRl(std.math.lerp(pos, vec.fromRl(self.camera.target), vec.splat(0.4)));
+    pub fn folowWithCamera(self: *Self, pos: Vec, lerp_coff: f32) void {
+        self.camera.target = vec.asRl(std.math.lerp(pos, vec.fromRl(self.camera.target), vec.splat(lerp_coff)));
         self.camera.offset = .{
-            .x = tof(@divFloor(rl.GetScreenWidth(), 2)),
-            .y = tof(@divFloor(rl.GetScreenHeight(), 2)),
+            .x = vec.tof(@divFloor(rl.GetScreenWidth(), 2)),
+            .y = vec.tof(@divFloor(rl.GetScreenHeight(), 2)),
         };
     }
 
@@ -234,13 +310,44 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
     fn draw(self: *Self) void {
         rl.ClearBackground(rl.BLACK);
 
-        rl.BeginMode2D(self.camera);
+        {
+            rl.BeginMode2D(self.camera);
 
-        if (@hasDecl(Spec, "drawWorld")) Spec.drawWorld(self);
+            if (@hasDecl(Spec, "drawWorld")) Spec.drawWorld(self);
 
-        rl.EndMode2D();
+            rl.EndMode2D();
+        }
 
-        if (@hasDecl(Spec, "drawUi")) Spec.drawUi(self);
+        {
+            if (@hasDecl(Spec, "drawUi")) Spec.drawUi(self);
+            if (@hasDecl(Spec, "time_limit")) b: {
+                const font_size = 25;
+                const padding = 10;
+                const spacing = 2;
+
+                const rem = self.timeRem(self.boot_time + Spec.time_limit) orelse break :b;
+                var buf: [32]u8 = undefined;
+
+                var allc = std.heap.FixedBufferAllocator.init(&buf);
+                const str = std.fmt.allocPrintZ(
+                    allc.allocator(),
+                    "{d}.{d}",
+                    .{ Spec.time_limit / 1000, 10 },
+                ) catch unreachable;
+
+                const text_size = vec.fromRl(rl.MeasureTextEx(rl.GetFontDefault(), str, font_size, spacing));
+
+                allc.reset();
+                const rstr = std.fmt.allocPrintZ(
+                    allc.allocator(),
+                    "{d}.{d}",
+                    .{ rem / 1000, rem / 100 % 10 },
+                ) catch unreachable;
+
+                const pos = Vec{ vec.tof(rl.GetScreenWidth()) - padding - text_size[0], padding };
+                rl.DrawTextEx(rl.GetFontDefault(), rstr, vec.asRl(pos), font_size, spacing, rl.WHITE);
+            }
+        }
 
         rl.DrawFPS(20, 20);
     }
@@ -251,8 +358,10 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
         };
     }
 
+    const Player = std.meta.TagPayload(Ents, .player);
+
     pub fn drawVisibleEntities(self: *Self) void {
-        const player = self.world.get(self.player, .player) orelse return;
+        const player = self.world.get(self.player, Player) orelse return;
         const width = @divFloor(rl.GetScreenWidth(), 2);
         const height = @divFloor(rl.GetScreenHeight(), 2);
         const cx, const cy = vec.asInt(player.pos);
@@ -269,11 +378,11 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
     }
 
     pub fn drawOffScreenEnemyIndicators(self: *Self) void {
-        const pos = self.world.get(self.player, .player) orelse return;
+        const player = self.world.get(self.player, Player) orelse return;
 
         const tl = vec.fromRl(rl.GetScreenToWorld2D(vec.asRl(vec.zero), self.camera));
-        const r = tof(rl.GetScreenWidth());
-        const b = tof(rl.GetScreenHeight());
+        const r = vec.tof(rl.GetScreenWidth());
+        const b = vec.tof(rl.GetScreenHeight());
         const br = vec.fromRl(rl.GetScreenToWorld2D(vec.asRl(.{ r, b }), self.camera));
         const radius = 20;
         const font_size = 14;
@@ -281,30 +390,30 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
         var dots = std.ArrayList(struct { Vec, usize }).init(self.arena.allocator());
         inline for (self.world.slct(enum { pos, indicated_enemy })) |s| for (s) |el| {
             const point =
-                vec.intersect(0, el.pos, pos, tl[1], tl[0], br[0]) orelse
-                vec.intersect(0, el.pos, pos, br[1], tl[0], br[0]) orelse
-                vec.intersect(1, el.pos, pos, tl[0], tl[1], br[1]) orelse
-                vec.intersect(1, el.pos, pos, br[0], tl[1], br[1]);
+                vec.intersect(0, el.pos, player.pos, tl[1], tl[0], br[0]) orelse
+                vec.intersect(0, el.pos, player.pos, br[1], tl[0], br[0]) orelse
+                vec.intersect(1, el.pos, player.pos, tl[0], tl[1], br[1]) orelse
+                vec.intersect(1, el.pos, player.pos, br[0], tl[1], br[1]);
 
             if (point) |p| {
                 for (dots.items) |*op| {
                     const diameter = radius * 2;
-                    if (vec.dist2(op[0], p) < tof(diameter * diameter)) {
+                    if (vec.dist2(op[0], p) < vec.tof(diameter * diameter)) {
                         op[1] += 1;
                         break;
                     }
-                } else try dots.append(.{ p, 1 });
+                } else dots.append(.{ p, 1 }) catch unreachable;
             }
         };
 
         var buf: [10]u8 = undefined;
         for (dots.items) |*p| {
             var allc = std.heap.FixedBufferAllocator.init(&buf);
-            const num = try std.fmt.allocPrintZ(allc.allocator(), "{d}", .{p[1]});
+            const num = std.fmt.allocPrintZ(allc.allocator(), "{d}", .{p[1]}) catch undefined;
             const text_size = vec.fromRl(rl.MeasureTextEx(rl.GetFontDefault(), num, font_size, 0)) * vec.splat(0.5);
             const clamp_size = text_size + vec.splat(4);
             p[0] = std.math.clamp(p[0], tl + clamp_size, br - clamp_size);
-            rl.DrawCircleV(vec.asRl(p[0]), tof(radius), rl.RED);
+            rl.DrawCircleV(vec.asRl(p[0]), vec.tof(radius), rl.RED);
             const point = vec.asInt(p[0] - text_size);
             rl.DrawText(num, point[0], point[1], font_size, rl.WHITE);
         }
