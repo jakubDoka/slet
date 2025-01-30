@@ -1,5 +1,5 @@
 textures: struct {
-    player2: assets.Frame,
+    player: assets.Frame,
     turret: assets.Frame,
     turret_cannon: assets.Frame,
     enemy_bullet: assets.Frame,
@@ -76,7 +76,7 @@ pub const Player = struct {
 
         const tone = self.health.draw(self, game);
         const color = vec.fcolor(1, tone, tone);
-        game.drawCenteredTexture(game.spec.textures.player2, self.pos, ang, size, color);
+        game.drawCenteredTexture(game.spec.textures.player, self.pos, ang, size, color);
     }
 
     pub fn input(self: *@This(), game: *Engine) void {
@@ -133,7 +133,7 @@ pub const AfterImage = struct {
     pub fn draw(self: *@This(), game: *Engine) void {
         const rate = vec.divToFloat(game.timeRem(self.live_until) orelse 0, lifetime);
         const color = rl.ColorAlpha(rl.WHITE, rate);
-        game.drawCenteredTexture(game.spec.textures.player2, self.pos, self.rot, Player.size, color);
+        game.drawCenteredTexture(game.spec.textures.player, self.pos, self.rot, Player.size, color);
     }
 };
 
