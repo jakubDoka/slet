@@ -1,17 +1,10 @@
-textures: struct {
-    player: assets.Frame,
-    turret: assets.Frame,
-    turret_cannon: assets.Frame,
-    enemy_bullet: assets.Frame,
-} = undefined,
-
 const std = @import("std");
 const ecs = @import("../ecs.zig");
 const vec = @import("../vec.zig");
 const engine = @import("../engine.zig");
 const assets = @import("../assets.zig");
-const rl = main.rl;
-const main = @import("../main.zig");
+const rl = @import("../rl.zig").rl;
+const textures = @import("../zig-out/sheet_frames.zig");
 
 const Id = ecs.Id;
 const Vec = vec.T;
@@ -27,7 +20,7 @@ pub const time_limit = 1000 * 20;
 const keys = [_]c_int{ rl.KEY_W, rl.KEY_A, rl.KEY_S, rl.KEY_D };
 
 const blue: rl.Color = @bitCast(std.mem.nativeToBig(u32, 0x59d2fdFF));
-const red: rl.Color = @bitCast(std.mem.nativeToBig(u32, 0xE3654AFF));
+const red: rl.Color = rl.ORANGE; //@bitCast(std.mem.nativeToBig(u32, 0xE3654AFF));
 const sub_reload = 200;
 const charge_count = 4;
 
@@ -80,7 +73,7 @@ pub const Player = struct {
 
         const tone = self.health.draw(self, game);
         const color = vec.fcolor(1, tone, tone);
-        game.drawCenteredTexture(game.spec.textures.player, self.pos, ang, size, color);
+        game.drawCenteredTexture(textures.player, self.pos, ang, size, color);
     }
 
     pub fn input(self: *@This(), game: *Engine) void {
@@ -132,7 +125,7 @@ pub const AfterImage = struct {
     pub fn draw(self: *@This(), game: *Engine) void {
         const rate = vec.divToFloat(game.timeRem(self.live_until) orelse 0, lifetime);
         const color = rl.ColorAlpha(rl.WHITE, rate);
-        game.drawCenteredTexture(game.spec.textures.player, self.pos, self.rot, Player.size, color);
+        game.drawCenteredTexture(textures.player, self.pos, self.rot, Player.size, color);
     }
 };
 
@@ -178,7 +171,7 @@ pub const Turret = struct {
     pub fn draw(self: *@This(), game: *Engine) void {
         const tone = self.health.draw(self, game);
         const color = vec.fcolor(1, tone, tone);
-        game.drawCenteredTexture(game.spec.textures.turret, self.pos, 0, size, color);
+        game.drawCenteredTexture(textures.turret, self.pos, 0, size, color);
     }
 
     pub fn update(self: *@This(), game: *Engine) void {
@@ -241,7 +234,7 @@ pub const Bullet = struct {
 pub const EnemyBullet = struct {
     pub const speed: f32 = 300;
     pub const friction: f32 = 0;
-    pub const size: f32 = 10;
+    pub const size: f32 = 20;
     pub const team: u32 = 1;
     pub const damage: u32 = 50;
     pub const max_health: u32 = 1;
@@ -256,29 +249,34 @@ pub const EnemyBullet = struct {
 
     pub fn draw(self: *@This(), game: *Engine) void {
         const emit_pos = self.pos + vec.norm(self.vel) * vec.splat(-size * 0.8);
-        const intensity = 15;
+        const coff = self.getCoff(game);
+        const intensity = 15 * (coff + 0.4);
 
         for (0..3) |_| {
             _ = game.world.add(FireParticle{
                 .pos = emit_pos + self.vel * vec.splat(rl.GetFrameTime()),
                 .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
                     vec.splat(100),
-                .live_until = game.time + 100 - game.prng.random().int(u32) % 40,
+                .live_until = game.time + 100 + @as(u32, @intFromFloat(40 * coff)) - game.prng.random().int(u32) % 40,
                 .size = intensity,
                 .color = red,
             });
         }
 
-        game.drawCenteredTexture(game.spec.textures.enemy_bullet, self.pos, vec.ang(self.vel), size, rl.WHITE);
+        game.drawCenteredTexture(textures.enemy_bullet, self.pos, vec.ang(self.vel), size, rl.WHITE);
     }
 
     pub fn update(self: *@This(), game: *Engine) void {
         const delta = rl.GetFrameTime();
         const target_pos = game.world.field(self.target, .pos).?.*;
-        const efficiency = @min(game.timeRem(self.boot_time + 2000) orelse 0, 1400);
-        const coff = std.math.pow(f32, 1 - vec.divToFloat(efficiency, 1400), 3);
+        const coff = self.getCoff(game);
         self.vel += vec.norm(target_pos - self.pos) * vec.splat(speed * 30 * coff * delta);
         self.vel *= vec.splat(1 - 6 * coff * delta);
+    }
+
+    fn getCoff(self: *@This(), game: *Engine) f32 {
+        const efficiency = @min(game.timeRem(self.boot_time + 2000) orelse 0, 1400);
+        return std.math.pow(f32, 1 - vec.divToFloat(efficiency, 1400), 3);
     }
 
     pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {

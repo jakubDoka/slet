@@ -1,17 +1,10 @@
-textures: struct {
-    player: assets.Frame,
-    turret: assets.Frame,
-    turret_cannon: assets.Frame,
-    enemy_bullet: assets.Frame,
-} = undefined,
-
 const std = @import("std");
 const ecs = @import("../ecs.zig");
 const vec = @import("../vec.zig");
 const engine = @import("../engine.zig");
 const assets = @import("../assets.zig");
-const rl = main.rl;
-const main = @import("../main.zig");
+const rl = @import("../rl.zig").rl;
+const textures = @import("../zig-out/sheet_frames.zig");
 
 const Id = ecs.Id;
 const Vec = vec.T;
@@ -76,7 +69,7 @@ pub const Player = struct {
 
         const tone = self.health.draw(self, game);
         const color = vec.fcolor(1, tone, tone);
-        game.drawCenteredTexture(game.spec.textures.player, self.pos, ang, size, color);
+        game.drawCenteredTexture(textures.player, self.pos, ang, size, color);
     }
 
     pub fn input(self: *@This(), game: *Engine) void {
@@ -133,7 +126,7 @@ pub const AfterImage = struct {
     pub fn draw(self: *@This(), game: *Engine) void {
         const rate = vec.divToFloat(game.timeRem(self.live_until) orelse 0, lifetime);
         const color = rl.ColorAlpha(rl.WHITE, rate);
-        game.drawCenteredTexture(game.spec.textures.player, self.pos, self.rot, Player.size, color);
+        game.drawCenteredTexture(textures.player, self.pos, self.rot, Player.size, color);
     }
 };
 
@@ -178,8 +171,8 @@ pub const Turret = struct {
     pub fn draw(self: *@This(), game: *Engine) void {
         const tone = self.health.draw(self, game);
         const color = vec.fcolor(1, tone, tone);
-        game.drawCenteredTexture(game.spec.textures.turret, self.pos, 0, size, color);
-        game.drawCenteredTexture(game.spec.textures.turret_cannon, self.pos, self.turret.rot, size, color);
+        game.drawCenteredTexture(textures.turret, self.pos, 0, size, color);
+        game.drawCenteredTexture(textures.turret_cannon, self.pos, self.turret.rot, size, color);
     }
 
     pub fn update(self: *@This(), game: *Engine) void {
@@ -269,7 +262,7 @@ pub const EnemyBullet = struct {
             });
         }
 
-        game.drawCenteredTexture(game.spec.textures.enemy_bullet, self.pos, vec.ang(self.vel), size, rl.WHITE);
+        game.drawCenteredTexture(textures.enemy_bullet, self.pos, vec.ang(self.vel), size, rl.WHITE);
     }
 
     pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {

@@ -1,5 +1,5 @@
 const std = @import("std");
-const rl = @import("main.zig").rl;
+const rl = @import("rl.zig").rl;
 
 pub const T = @Vector(2, f32);
 

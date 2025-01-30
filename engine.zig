@@ -1,14 +1,12 @@
 const std = @import("std");
 const ecs = @import("ecs.zig");
-const rl = @import("main.zig").rl;
+const rl = @import("rl.zig").rl;
 
 const Quad = @import("QuadTree.zig");
 const Id = ecs.Id;
 
-const assets = @import("assets.zig");
-
 pub fn Level(comptime Spec: type) type {
-    return @TypeOf(level(Spec, undefined));
+    return @TypeOf(level(Spec, undefined, undefined));
 }
 
 const ColisionRec = struct { a: Id, b: Id, t: f32 };
@@ -59,8 +57,10 @@ pub fn PackEnts(comptime S: type) type {
     } });
 }
 
-pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
-    sheet: rl.Texture2D = undefined,
+const main = @import("main.zig");
+
+pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Level) struct {
+    level_data: *main.Level,
     spec: Spec = .{},
     world: World,
     quad: Quad,
@@ -181,21 +181,25 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
         return vec.fromRl(rl.GetScreenToWorld2D(rl.GetMousePosition(), self.camera));
     }
 
-    pub fn drawTexture(self: *Self, texture: *const assets.Frame, pos: Vec, scale: f32, color: rl.Color) void {
+    const Frame = rl.Rectangle;
+
+    pub fn drawTexture(self: *Self, texture: *const Frame, pos: Vec, scale: f32, color: rl.Color) void {
+        _ = self; // autofix
         const real_width = texture.r.f.width * scale;
         const real_height = texture.r.f.height * scale;
         const dst = .{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
         const origin = .{ .x = 0, .y = 0 };
-        rl.DrawTexturePro(self.sheet, texture.r.f, dst, origin, 0, color);
+        rl.DrawTexturePro(main.sheet, texture.r.f, dst, origin, 0, color);
     }
 
-    pub fn drawCenteredTexture(self: *Self, texture: assets.Frame, pos: Vec, rot: f32, size: f32, color: rl.Color) void {
+    pub fn drawCenteredTexture(self: *Self, texture: Frame, pos: Vec, rot: f32, size: f32, color: rl.Color) void {
+        _ = self; // autofix
         const scale = size / (texture.width / 2);
         const real_width = texture.width * scale;
         const real_height = texture.height * scale;
         const dst = .{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
         const origin = .{ .x = real_width / 2, .y = real_height / 2 };
-        rl.DrawTexturePro(self.sheet, texture, dst, origin, rot / std.math.tau * 360, color);
+        rl.DrawTexturePro(main.sheet, texture, dst, origin, rot / std.math.tau * 360, color);
     }
 
     pub fn deinit(self: *Self) void {
@@ -220,9 +224,6 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
     }
 
     pub fn run(self: *Self) void {
-        self.sheet = assets.initTextures(&self.spec.textures, self.gpa, 128) catch unreachable;
-        defer rl.UnloadTexture(self.sheet);
-
         while (true) {
             {
                 self.time = @intFromFloat(rl.GetTime() * 1000);
@@ -238,7 +239,20 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
                 std.debug.assert(self.arena.reset(.retain_capacity));
                 self.time = @intFromFloat(rl.GetTime() * 1000);
 
-                if (self.update()) break;
+                if (self.update()) {
+                    if (self.world.get(self.player, Player)) |p| {
+                        self.level_data.best_time = self.time - self.boot_time;
+                        self.level_data.no_hit = self.level_data.no_hit or
+                            (@hasDecl(Player, "max_health") and
+                            p.health.points == Player.max_health);
+                    }
+                    break;
+                }
+
+                if (@hasDecl(Spec, "time_limit") and
+                    self.timeRem(self.boot_time + Spec.time_limit) == null)
+                    break;
+
                 self.input();
 
                 rl.BeginDrawing();
@@ -266,9 +280,6 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
         self.world.invokeForAll(.update, .{self});
         var finished = false;
         if (@hasDecl(Spec, "update")) finished = Spec.update(self);
-
-        if (@hasDecl(Spec, "time_limit") and
-            self.timeRem(self.boot_time + Spec.time_limit) == null) finished = true;
 
         for (self.to_delete.items) |id| {
             _ = self.world.invoke(id, .onDelete, .{self});
@@ -324,10 +335,11 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
         }
 
         {
+            const padding = 10;
+            var cursor = Vec{ vec.tof(rl.GetScreenWidth()) - padding, padding };
             if (@hasDecl(Spec, "drawUi")) Spec.drawUi(self);
             if (@hasDecl(Spec, "time_limit")) b: {
                 const font_size = 25;
-                const padding = 10;
                 const spacing = 2;
 
                 const rem = self.timeRem(self.boot_time + Spec.time_limit) orelse break :b;
@@ -349,9 +361,11 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
                     .{ rem / 1000, rem / 100 % 10 },
                 ) catch unreachable;
 
-                const pos = Vec{ vec.tof(rl.GetScreenWidth()) - padding - text_size[0], padding };
-                rl.DrawTextEx(rl.GetFontDefault(), rstr, vec.asRl(pos), font_size, spacing, rl.WHITE);
+                cursor[0] -= text_size[0] + padding;
+                rl.DrawTextEx(rl.GetFontDefault(), rstr, vec.asRl(cursor), font_size, spacing, rl.WHITE);
             }
+
+            if (self.level_data.no_hit) {}
         }
 
         rl.DrawFPS(20, 20);
@@ -533,6 +547,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
     }
 } {
     return .{
+        .level_data = level_data,
         .gpa = gpa,
         .arena = std.heap.ArenaAllocator.init(gpa),
         .world = .{ .gpa = gpa },

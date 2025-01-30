@@ -23,13 +23,19 @@ pub fn build(b: *std.Build) !void {
     gen_level_exports.has_side_effects = true;
     const levels_file = gen_level_exports.addOutputFileArg("levels.zig");
 
-    //const levels = try std.fs.cwd().openDir("levels", .{});
-    //var walker = try levels.walk(b.allocator);
-    //defer walker.deinit();
-    //while (try walker.next()) |e| {
-    //    if (e.kind != .file) continue;
-    //    if (!std.mem.endsWith(u8, e.basename, ".zig")) continue;
-    //}
+    const gen_sprite_sheet_exe = b.addExecutable(.{
+        .name = "gen_sheet",
+        .root_source_file = b.path("gen_sheet.zig"),
+        .optimize = optimize,
+        .target = target,
+    });
+    gen_sprite_sheet_exe.linkLibrary(raylib_artifact);
+
+    const gen_sprite_sheet = b.addRunArtifact(gen_sprite_sheet_exe);
+    gen_sprite_sheet.addDirectoryArg(b.path("assets/textures"));
+    gen_sprite_sheet.has_side_effects = true;
+    const sheet_image_file = gen_sprite_sheet.addOutputFileArg("sheet_image.png");
+    const sheet_frames_file = gen_sprite_sheet.addOutputFileArg("sheet_frames.zig");
 
     const exe = b.addExecutable(.{
         .name = "slet",
@@ -38,6 +44,8 @@ pub fn build(b: *std.Build) !void {
         .target = target,
     });
     exe.step.dependOn(&b.addInstallFile(levels_file, "levels.zig").step);
+    exe.step.dependOn(&b.addInstallFile(sheet_image_file, "sheet_image.png").step);
+    exe.step.dependOn(&b.addInstallFile(sheet_frames_file, "sheet_frames.zig").step);
     exe.linkLibrary(raylib_artifact);
 
     const runa = b.addRunArtifact(exe);

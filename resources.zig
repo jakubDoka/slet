@@ -1,4 +1,4 @@
-const rl = @import("main.zig").rl;
+const rl = @import("rl.zig").rl;
 const std = @import("std");
 
 pub const sprites = struct {
@@ -63,9 +63,8 @@ pub const sprites = struct {
         std.sort.pdq(Frame, frames, {}, Frame.byId);
     }
 
-    pub fn pack(gpa: std.mem.Allocator, textures: []const rl.Image, frames: []Frame, sheet_size: u32) !rl.Texture2D {
+    pub fn pack(gpa: std.mem.Allocator, textures: []const rl.Image, frames: []Frame, sheet_size: u32) !rl.Image {
         var image = rl.GenImageColor(@intCast(sheet_size), @intCast(sheet_size), rl.BLANK);
-        defer rl.UnloadImage(image);
 
         for (frames, textures) |*frame, tex| {
             frame.* = .{ .r = .{ .i = .{ .width = @intCast(tex.width), .height = @intCast(tex.height) } } };
@@ -84,7 +83,7 @@ pub const sprites = struct {
             rl.ImageDraw(&image, tex, src, frame.r.f, rl.WHITE);
         }
 
-        return rl.LoadTextureFromImage(image);
+        return image;
     }
 };
 
