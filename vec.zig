@@ -24,6 +24,18 @@ pub fn fcolor(r: f32, g: f32, b: f32) rl.Color {
     };
 }
 
+pub fn moveTowardsAngle(from: f32, to: f32, max_step: f32) f32 {
+    var delta = to - from;
+    // Normalize delta to the range [-pi, pi]
+    delta = @mod(delta + std.math.pi, std.math.tau) - std.math.pi;
+    delta = std.math.clamp(delta, -max_step, max_step);
+    return from + delta;
+}
+
+pub fn normalizeAng(angle: f32) f32 {
+    return moveTowardsAngle(0, angle, std.math.pi);
+}
+
 pub fn fromRl(v: rl.Vector2) T {
     return @bitCast(v);
 }

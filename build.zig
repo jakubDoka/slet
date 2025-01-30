@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) !void {
 
     const gen_level_exports = b.addRunArtifact(gen_exports_exe);
     gen_level_exports.addDirectoryArg(b.path("levels"));
+    gen_level_exports.has_side_effects = true;
     const levels_file = gen_level_exports.addOutputFileArg("levels.zig");
 
     //const levels = try std.fs.cwd().openDir("levels", .{});

@@ -34,7 +34,7 @@ pub fn main() !void {
 
     var state = State{ .Levels = {} };
 
-    while (!rl.WindowShouldClose()) switch (state) {
+    b: while (!rl.WindowShouldClose()) switch (state) {
         .Levels => {
             rl.BeginDrawing();
             defer rl.EndDrawing();
@@ -42,7 +42,7 @@ pub fn main() !void {
             const mouse_pos = vec.fromRl(rl.GetMousePosition());
             var cursor = vec.splat(10);
             const font_size, const padding, const margin, const spacing = .{ 25, 10, 10, 2 };
-            for (level_list) |l| {
+            for (Level.list) |l| {
                 const text_size = vec.fromRl(rl.MeasureTextEx(rl.GetFontDefault(), l.name, font_size, spacing));
                 const size = text_size + vec.splat(padding * 2);
                 const text_pos = cursor + vec.splat(padding);
@@ -51,7 +51,7 @@ pub fn main() !void {
                 if (@reduce(.And, mouse_pos >= cursor) and @reduce(.And, mouse_pos <= cursor + size)) {
                     if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
                         state = .{ .Playing = l };
-                        continue;
+                        continue :b;
                     } else {
                         color = rl.BROWN;
                     }
@@ -70,46 +70,50 @@ pub fn main() !void {
             state = .{ .Levels = {} };
         },
     };
-
-    level_list[0].run(alloc.allocator());
 }
 
 const Level = struct {
     name: [:0]const u8,
     run: *const fn (std.mem.Allocator) void,
-};
 
-const level_list = b: {
-    const decls = @typeInfo(levels).Struct.decls;
+    const order = .{
+        "Deflector",
+        "DodgeGun",
+    };
 
-    var list: [decls.len]Level = undefined;
-    for (decls, &list) |d, *l| {
-        const name = n: {
-            var buf: [64]u8 = undefined;
-            var i = 0;
-            for (d.name) |c| {
-                if (std.ascii.isUpper(c) and i != 0) {
-                    buf[i] = ' ';
+    const list = b: {
+        const decls = @typeInfo(levels).Struct.decls;
+        std.debug.assert(decls.len == order.len);
+
+        var mem: [decls.len]Level = undefined;
+        for (order, &mem) |dname, *l| {
+            const name = n: {
+                var buf: [64]u8 = undefined;
+                var i = 0;
+                for (dname) |c| {
+                    if (std.ascii.isUpper(c) and i != 0) {
+                        buf[i] = ' ';
+                        i += 1;
+                    }
+                    buf[i] = std.ascii.toLower(c);
                     i += 1;
                 }
-                buf[i] = std.ascii.toLower(c);
-                i += 1;
-            }
-            buf[i] = 0;
-            break :n buf[0..i] ++ "";
-        };
+                buf[i] = 0;
+                break :n buf[0..i] ++ "";
+            };
 
-        l.* = .{
-            .name = name,
-            .run = struct {
-                fn run(gpa: std.mem.Allocator) void {
-                    var level = engine.level(levels.DodgeGun, gpa);
-                    defer level.deinit();
-                    level.run();
-                }
-            }.run,
-        };
-    }
+            l.* = .{
+                .name = name,
+                .run = struct {
+                    fn run(gpa: std.mem.Allocator) void {
+                        var level = engine.level(@field(levels, dname), gpa);
+                        defer level.deinit();
+                        level.run();
+                    }
+                }.run,
+            };
+        }
 
-    break :b list;
+        break :b mem;
+    };
 };

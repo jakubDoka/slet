@@ -124,8 +124,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
         target: Id = Id.invalid,
 
         pub fn update(self: *@This(), ctx: anytype, game: *Self) void {
-            const bullet_tag = .enemy_bullet;
-            const Bullet = std.meta.TagPayload(Ents, bullet_tag);
+            const Bullet = @TypeOf(ctx.*).Bullet;
 
             if (self.target != Id.invalid) if (game.world.field(self.target, .pos)) |target| b: {
                 var pos = target.*;
@@ -139,9 +138,14 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
                 }
 
                 const dir = vec.norm(pos - ctx.pos);
-                self.rot = vec.ang(dir);
+                self.rot = vec.moveTowardsAngle(self.rot, vec.ang(dir), rl.GetFrameTime() * @TypeOf(ctx.*).turret_speed);
+                self.rot = vec.normalizeAng(self.rot);
 
-                if (game.timer(&self.reload, @TypeOf(ctx.*).reload)) {
+                const max_dist = World.cnst(self.target, .size) + Bullet.size;
+
+                const offset_tolerance = std.math.asin(max_dist / vec.dist(pos, ctx.pos));
+
+                if (@abs(self.rot - vec.ang(pos - ctx.pos)) < offset_tolerance and game.timer(&self.reload, @TypeOf(ctx.*).reload)) {
                     const bull = game.world.add(Bullet{
                         .pos = ctx.pos,
                         .vel = ctx.vel + vec.rad(self.rot, Bullet.speed),
@@ -217,6 +221,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
 
     pub fn run(self: *Self) void {
         self.sheet = assets.initTextures(&self.spec.textures, self.gpa, 128) catch unreachable;
+        defer rl.UnloadTexture(self.sheet);
 
         while (true) {
             {
@@ -440,9 +445,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator) struct {
                 if (id == pb.id) continue;
                 const opb = self.world.fields(id, Q) orelse continue;
 
-                if (World.cnst(id, .team) == World.cnst(pb.id, .team) and
-                    World.cnst(pb.id, .max_health) == 0 and
-                    World.cnst(id, .max_health) == 0) continue;
+                if (World.cnst(id, .team) == World.cnst(pb.id, .team)) continue;
 
                 const g = @TypeOf(pb.*).size + World.cnst(id, .size);
 
