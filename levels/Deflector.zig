@@ -2,7 +2,6 @@ const std = @import("std");
 const ecs = @import("../ecs.zig");
 const vec = @import("../vec.zig");
 const engine = @import("../engine.zig");
-const assets = @import("../assets.zig");
 const rl = @import("../rl.zig").rl;
 const textures = @import("../zig-out/sheet_frames.zig");
 
@@ -250,7 +249,7 @@ pub const EnemyBullet = struct {
     pub fn draw(self: *@This(), game: *Engine) void {
         const emit_pos = self.pos + vec.norm(self.vel) * vec.splat(-size * 0.8);
         const coff = self.getCoff(game);
-        const intensity = 15 * (coff + 0.4);
+        const intensity = 10 * (coff + 0.4);
 
         for (0..3) |_| {
             _ = game.world.add(FireParticle{

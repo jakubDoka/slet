@@ -1,6 +1,7 @@
 const std = @import("std");
 const ecs = @import("ecs.zig");
 const rl = @import("rl.zig").rl;
+const textures = @import("zig-out/sheet_frames.zig");
 
 const Quad = @import("QuadTree.zig");
 const Id = ecs.Id;
@@ -59,8 +60,8 @@ pub fn PackEnts(comptime S: type) type {
 
 const main = @import("main.zig");
 
-pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Level) struct {
-    level_data: *main.Level,
+pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.SaveData) struct {
+    level_data: *main.SaveData,
     spec: Spec = .{},
     world: World,
     quad: Quad,
@@ -183,17 +184,18 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Leve
 
     const Frame = rl.Rectangle;
 
-    pub fn drawTexture(self: *Self, texture: *const Frame, pos: Vec, scale: f32, color: rl.Color) void {
-        _ = self; // autofix
-        const real_width = texture.r.f.width * scale;
-        const real_height = texture.r.f.height * scale;
+    pub fn drawTexture(self: *Self, texture: Frame, pos: Vec, size: f32, color: rl.Color) void {
+        _ = self;
+        const scale = size / (texture.width / 2);
+        const real_width = texture.width * scale;
+        const real_height = texture.height * scale;
         const dst = .{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
         const origin = .{ .x = 0, .y = 0 };
-        rl.DrawTexturePro(main.sheet, texture.r.f, dst, origin, 0, color);
+        rl.DrawTexturePro(main.sheet, texture, dst, origin, 0, color);
     }
 
     pub fn drawCenteredTexture(self: *Self, texture: Frame, pos: Vec, rot: f32, size: f32, color: rl.Color) void {
-        _ = self; // autofix
+        _ = self;
         const scale = size / (texture.width / 2);
         const real_width = texture.width * scale;
         const real_height = texture.height * scale;
@@ -336,10 +338,10 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Leve
 
         {
             const padding = 10;
-            var cursor = Vec{ vec.tof(rl.GetScreenWidth()) - padding, padding };
+            const font_size = 25;
+            var cursor = Vec{ vec.tof(rl.GetScreenWidth()), padding };
             if (@hasDecl(Spec, "drawUi")) Spec.drawUi(self);
             if (@hasDecl(Spec, "time_limit")) b: {
-                const font_size = 25;
                 const spacing = 2;
 
                 const rem = self.timeRem(self.boot_time + Spec.time_limit) orelse break :b;
@@ -365,7 +367,10 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Leve
                 rl.DrawTextEx(rl.GetFontDefault(), rstr, vec.asRl(cursor), font_size, spacing, rl.WHITE);
             }
 
-            if (self.level_data.no_hit) {}
+            if (self.level_data.no_hit) {
+                cursor[0] -= textures.no_hit.width * 2 + padding;
+                self.drawTexture(textures.no_hit, cursor, textures.no_hit.width, rl.WHITE);
+            }
         }
 
         rl.DrawFPS(20, 20);

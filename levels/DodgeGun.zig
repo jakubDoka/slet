@@ -2,7 +2,6 @@ const std = @import("std");
 const ecs = @import("../ecs.zig");
 const vec = @import("../vec.zig");
 const engine = @import("../engine.zig");
-const assets = @import("../assets.zig");
 const rl = @import("../rl.zig").rl;
 const textures = @import("../zig-out/sheet_frames.zig");
 

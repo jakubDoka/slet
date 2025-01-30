@@ -20,20 +20,7 @@ const State = union(enum) {
 pub var sheet: rl.Texture2D = undefined;
 
 pub fn main() !void {
-    const SaveData = [Level.list.len]struct { no_hit: bool, best_time: u32 };
-    b: {
-        const save_file = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "slet_scores.json", 1024 * 20) catch break :b;
-        const save_data = std.json.parseFromSliceLeaky(
-            SaveData,
-            std.heap.page_allocator,
-            save_file,
-            .{},
-        ) catch break :b;
-        for (save_data, &Level.list) |s, *l| {
-            l.no_hit = s.no_hit;
-            l.best_time = s.best_time;
-        }
-    }
+    loadGameData();
 
     rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE);
     rl.SetTargetFPS(60);
@@ -62,8 +49,8 @@ pub fn main() !void {
             for (&Level.list) |*l| {
                 var allc = std.heap.FixedBufferAllocator.init(&buf);
                 _ = std.fmt.allocPrint(allc.allocator(), "{s}", .{l.name}) catch undefined;
-                if (l.best_time != std.math.maxInt(u32))
-                    _ = std.fmt.allocPrint(allc.allocator(), " {d}.{d}", .{ l.best_time / 1000, l.best_time % 1000 }) catch undefined;
+                if (l.data.best_time != std.math.maxInt(u32))
+                    _ = std.fmt.allocPrint(allc.allocator(), " {d}.{d}", .{ l.data.best_time / 1000, l.data.best_time % 1000 }) catch undefined;
                 allc.buffer[allc.end_index] = 0;
                 const name = allc.buffer[0..allc.end_index :0];
 
@@ -83,13 +70,13 @@ pub fn main() !void {
 
                 rl.DrawRectangleV(vec.asRl(cursor), vec.asRl(size), color);
                 color = rl.WHITE;
-                if (l.no_hit) color = rl.GOLD;
+                if (l.data.no_hit) color = rl.GOLD;
                 rl.DrawTextEx(rl.GetFontDefault(), name, vec.asRl(text_pos), font_size, spacing, color);
                 cursor[0] += size[0] + margin;
             }
         },
         .Playing => |l| {
-            l.run(alloc.allocator(), l);
+            l.run(alloc.allocator(), &l.data);
 
             // reset rl.WindowShouldClose
             rl.BeginDrawing();
@@ -98,9 +85,31 @@ pub fn main() !void {
         },
     };
 
-    var save_data: SaveData = undefined;
+    saveGameData();
+}
+
+pub const SaveData = struct {
+    no_hit: bool = false,
+    best_time: u32 = std.math.maxInt(u32),
+};
+
+fn loadGameData() void {
+    const save_file = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "slet_scores.json", 1024 * 20) catch return;
+    const save_data = std.json.parseFromSliceLeaky(
+        [Level.list.len]SaveData,
+        std.heap.page_allocator,
+        save_file,
+        .{},
+    ) catch return;
+    for (save_data, &Level.list) |s, *l| {
+        l.data = s;
+    }
+}
+
+fn saveGameData() void {
+    var save_data: [Level.list.len]SaveData = undefined;
     for (&save_data, Level.list) |*s, l| {
-        s.* = .{ .no_hit = l.no_hit, .best_time = l.best_time };
+        s.* = l.data;
     }
 
     var save_file = std.fs.cwd().createFile("slet_scores.json", .{}) catch unreachable;
@@ -109,9 +118,8 @@ pub fn main() !void {
 
 pub const Level = struct {
     name: [:0]const u8,
-    run: *const fn (std.mem.Allocator, *Level) void,
-    no_hit: bool = false,
-    best_time: u32 = std.math.maxInt(u32),
+    run: *const fn (std.mem.Allocator, *SaveData) void,
+    data: SaveData = .{},
 
     const order = .{
         "Deflector",
@@ -142,7 +150,7 @@ pub const Level = struct {
             l.* = .{
                 .name = name,
                 .run = struct {
-                    fn run(gpa: std.mem.Allocator, lvl_data: *Level) void {
+                    fn run(gpa: std.mem.Allocator, lvl_data: *SaveData) void {
                         var level = engine.level(@field(levels, dname), gpa, lvl_data);
                         defer level.deinit();
                         level.run();

@@ -1,3 +1,4 @@
 /.zig-cache
 /.direnv
 /zig-out
+slet_stores.json
