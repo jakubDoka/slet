@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) !void {
         .name = "gen_exports",
         .root_source_file = b.path("gen_exports.zig"),
         .optimize = optimize,
-        .target = target,
+        .target = b.host,
     });
 
     const gen_level_exports = b.addRunArtifact(gen_exports_exe);
@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) !void {
         .name = "gen_sheet",
         .root_source_file = b.path("gen_sheet.zig"),
         .optimize = optimize,
-        .target = target,
+        .target = b.host,
     });
     gen_sprite_sheet_exe.linkLibrary(raylib_artifact);
 
