@@ -34,6 +34,7 @@ pub const Player = struct {
     pub const team: u32 = 0;
     pub const damage: u32 = 0;
     pub const reload: u32 = 2000;
+    pub const color = blue;
 
     id: Id = undefined,
     pos: Vec = vec.zero,
@@ -74,8 +75,8 @@ pub const Player = struct {
         };
 
         const tone = self.health.draw(self, game);
-        const color = vec.fcolor(1, tone, tone);
-        game.drawCenteredTexture(textures.player, self.pos, ang, size, color);
+        const col = vec.fcolor(1, tone, tone);
+        game.drawCenteredTexture(textures.player, self.pos, ang, size, col);
     }
 
     pub fn input(self: *@This(), game: *Engine) void {
@@ -158,6 +159,8 @@ pub const Turret = struct {
     pub const damage: u32 = 10;
     pub const sight: f32 = 700;
     pub const turret_speed: f32 = std.math.tau;
+    pub const reload: u32 = 4000;
+    pub const color = red;
     pub const Bullet = Self.EnemyBullet;
 
     id: Id = undefined,
@@ -172,13 +175,13 @@ pub const Turret = struct {
 
     pub fn draw(self: *@This(), game: *Engine) void {
         const tone = self.health.draw(self, game);
-        const color = vec.fcolor(1, tone, tone);
-        game.drawCenteredTexture(textures.turret, self.pos, 0, size, color);
+        const col = vec.fcolor(1, tone, tone);
+        game.drawCenteredTexture(textures.turret, self.pos, 0, size, col);
     }
 
     pub fn update(self: *@This(), game: *Engine) void {
         const target = game.findEnemy(self) orelse return;
-        if (game.timer(&self.reload, 5000)) {
+        if (game.timer(&self.reload, reload)) {
             self.charges += charge_count;
         }
 
@@ -321,6 +324,7 @@ pub fn input(self: *Engine) void {
 pub fn drawWorld(self: *Engine) void {
     self.drawParticles();
     self.drawVisibleEntities();
+    self.drawReloadIndicators();
     self.drawOffScreenEnemyIndicators();
 }
 

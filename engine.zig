@@ -149,6 +149,14 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         }
     };
 
+    pub fn scrollZoom(self: *Self) void {
+        const max_zoom = 2;
+        const min_zoom = 0.5;
+        const scroll = rl.GetMouseWheelMove();
+
+        self.camera.zoom = std.math.clamp(self.camera.zoom + scroll / 2, min_zoom, max_zoom);
+    }
+
     pub fn findEnemy(self: *Self, ctx: anytype) ?Id {
         const pos = vec.asInt(ctx.pos);
         const size: i32 = @intFromFloat(@TypeOf(ctx.*).sight);
@@ -179,6 +187,29 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         const dst = .{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
         const origin = .{ .x = 0, .y = 0 };
         rl.DrawTexturePro(main.sheet, texture, dst, origin, 0, color);
+    }
+
+    pub fn drawReloadIndicators(self: *Self) void {
+        inline for (self.world.slct(enum { pos, reload })) |s| for (s) |ent| {
+            const Ent = @TypeOf(ent);
+            if (@hasDecl(Ent, "reload") and @hasDecl(Ent, "size") and @hasDecl(Ent, "color")) {
+                self.drawReloadIndicator(ent.pos, ent.reload, Ent.reload, Ent.size, Ent.color);
+            }
+        };
+
+        inline for (self.world.slct(enum { pos, turret })) |s| for (s) |ent| {
+            const Ent = @TypeOf(ent);
+            if (@hasDecl(Ent, "reload") and @hasDecl(Ent, "size") and @hasDecl(Ent, "color")) {
+                self.drawReloadIndicator(ent.pos, ent.turret.reload, Ent.reload, Ent.size, Ent.color);
+            }
+        };
+    }
+
+    pub fn drawReloadIndicator(self: *Self, pos: Vec, progress: u32, reload: u32, size: f32, color: rl.Color) void {
+        if (self.timeRem(progress)) |rem| {
+            const end = 360 * (1 - vec.divToFloat(rem, reload));
+            rl.DrawRing(vec.asRl(pos), size + 10, size + 14, 0.0, end, 50, color);
+        }
     }
 
     pub fn drawCenteredTexture(self: *Self, texture: Frame, pos: Vec, rot: f32, size: f32, color: rl.Color) void {
@@ -310,6 +341,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
     }
 
     pub fn input(self: *Self) void {
+        self.scrollZoom();
         if (@hasDecl(Spec, "input")) Spec.input(self);
     }
 
