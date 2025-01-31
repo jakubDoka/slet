@@ -41,7 +41,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
 
     pub const TileMap = struct {
         const Tile = std.math.IntFittingRange(0, Spec.tile_sheet.len);
-        const no_tile = std.math.maxInt(Tile);
+        pub const no_tile = std.math.maxInt(Tile);
         const tile_size: u32 = @intFromFloat(Spec.tile_sheet[0].width * 2);
         pub const stride = (@as(u32, 1) << Spec.world_size_pow) / tile_size;
         const size = stride * stride;
@@ -50,6 +50,10 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
 
         inline fn project(v: f32) u32 {
             return @intCast(std.math.clamp(@as(i32, @intFromFloat(v / tile_size)), 0, @as(i32, @intCast(stride - 1))));
+        }
+
+        pub inline fn get(self: *@This(), x: usize, y: usize) Tile {
+            return self.tiles[y * stride + x];
         }
 
         pub inline fn set(self: *@This(), x: usize, y: usize, tile: Tile) void {
@@ -62,11 +66,47 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
             const maxx = project(view_port.x + view_port.width + tile_size);
             const maxy = project(view_port.y + view_port.height + tile_size);
 
+            const color = rl.WHITE;
             for (miny..maxy) |y| for (minx..maxx) |x| {
                 const tile = game.tile_map.tiles[y * stride + x];
-                if (tile == no_tile) continue;
-                const pos = .{ vec.tof(x * tile_size), vec.tof(y * tile_size) };
-                game.drawTexture(Spec.tile_sheet[tile], pos, tile_size / 2, rl.ColorAlpha(rl.WHITE, 0.6));
+                const pos = Vec{ vec.tof(x * tile_size), vec.tof(y * tile_size) } + vec.splat(tile_size / 2);
+                if (tile != no_tile) {
+                    game.drawCenteredTexture(Spec.tile_sheet[tile], pos, 0, tile_size / 2, color);
+                    continue;
+                }
+
+                const utils = struct {
+                    pub inline fn sideMask(side: u2, value: bool) u8 {
+                        return ([_]u8{ 0b111, 0b1_1_100, 0b111_0_000, 0b110_0_000_1 })[side] * @intFromBool(value);
+                    }
+
+                    pub inline fn cornerMask(side: u2, value: bool) u8 {
+                        return ([_]u8{ 0b1, 0b100, 0b1_0_000, 0b0_100_0_000 })[side] * @intFromBool(value);
+                    }
+                };
+
+                const s = stride - 1;
+                const bitset: u8 =
+                    utils.sideMask(0, y != 0 and game.tile_map.get(x, y - 1) == 0) |
+                    utils.sideMask(1, x != s and game.tile_map.get(x + 1, y) == 0) |
+                    utils.sideMask(2, y != s and game.tile_map.get(x, y + 1) == 0) |
+                    utils.sideMask(3, x != 0 and game.tile_map.get(x - 1, y) == 0) |
+                    utils.cornerMask(0, x != 0 and y != 0 and game.tile_map.get(x - 1, y - 1) == 0) |
+                    utils.cornerMask(1, x != s and y != 0 and game.tile_map.get(x + 1, y - 1) == 0) |
+                    utils.cornerMask(2, x != s and y != s and game.tile_map.get(x + 1, y + 1) == 0) |
+                    utils.cornerMask(3, x != 0 and y != s and game.tile_map.get(x - 1, y + 1) == 0);
+
+                for (0..8) |i| {
+                    if (i % 2 == 0 and bitset & (@as(u8, 1) << @intCast(i)) != 0) {
+                        game.drawCenteredTexture(Spec.weng_tiles[i % 2], pos, (std.math.tau / 4.0) * vec.tof(i / 2), tile_size / 2, color);
+                    }
+                }
+
+                for (0..8) |i| {
+                    if (i % 2 == 1 and bitset & (@as(u8, 1) << @intCast(i)) != 0) {
+                        game.drawCenteredTexture(Spec.weng_tiles[i % 2], pos, (std.math.tau / 4.0) * vec.tof(i / 2), tile_size / 2, color);
+                    }
+                }
             };
         }
     };

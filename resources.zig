@@ -38,10 +38,17 @@ pub const sprites = struct {
 
                 if (x + frame.r.i.width > size or y + frame.r.i.height > size) continue :o;
 
-                inline for (.{ y, y + frame.r.i.height - 1 }) |dy| for (x..x + frame.r.i.width) |dx| {
+                const spc = 1;
+
+                const minx = x -| spc;
+                const miny = y -| spc;
+                const maxx = @min(x + frame.r.i.width + spc, size);
+                const maxy = @min(y + frame.r.i.height + spc, size);
+
+                inline for (.{ miny, maxy }) |dy| for (minx..maxx) |dx| {
                     if (taken_set.isSet(dx + dy * size)) continue :o;
                 };
-                inline for (.{ x, x + frame.r.i.width - 1 }) |dx| for (y..y + frame.r.i.height) |dy| {
+                inline for (.{ minx, maxx }) |dx| for (miny..maxy) |dy| {
                     if (taken_set.isSet(dx + dy * size)) continue :o;
                 };
 

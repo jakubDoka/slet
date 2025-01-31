@@ -16,7 +16,12 @@ pub const world_size_pow = 12;
 pub const hit_tween_duration = 100;
 pub const time_limit = 1000 * 15;
 pub const tile_sheet = [_]rl.Rectangle{
-    textures.tile,
+    textures.tile_full,
+};
+
+pub const weng_tiles = [_]rl.Rectangle{
+    textures.tile_corner,
+    textures.tile_side,
 };
 
 const keys = [_]c_int{ rl.KEY_W, rl.KEY_A, rl.KEY_S, rl.KEY_D };
@@ -43,6 +48,7 @@ pub const Player = struct {
 
     pub fn draw(self: *@This(), game: *Engine) void {
         const dir = game.mousePos() - self.pos;
+        game.drawCenteredTexture(textures.shadow, self.pos - vec.norm(dir) * vec.splat(5), 0, size * 1.1, rl.WHITE);
         const ang = vec.ang(dir);
 
         var boost_dir = vec.zero;
@@ -175,7 +181,10 @@ pub const Turret = struct {
     pub fn draw(self: *@This(), game: *Engine) void {
         const tone = self.health.draw(self, game);
         const col = vec.fcolor(1, tone, tone);
+
+        game.drawCenteredTexture(textures.shadow, self.pos, 0, size * 1.2, rl.WHITE);
         game.drawCenteredTexture(textures.turret, self.pos, 0, size, col);
+        game.drawCenteredTexture(textures.shadow, self.pos, 0, size * 1.1, rl.WHITE);
         game.drawCenteredTexture(textures.turret_cannon, self.pos, self.turret.rot, size, col);
     }
 

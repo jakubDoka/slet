@@ -25,6 +25,19 @@ pub fn main() !void {
         try images.append(rl.LoadImageFromMemory(".png", canon.ptr, @intCast(canon.len)));
     }
 
+    const shadow_res = 32;
+    var img = rl.GenImageColor(shadow_res, shadow_res, .{});
+    const center = rl.Vector2{ .x = shadow_res / 2, .y = shadow_res / 2 };
+
+    for (0..shadow_res) |x| for (0..shadow_res) |y| {
+        const pos = rl.Vector2{ .x = @floatFromInt(x), .y = @floatFromInt(y) };
+        const dist = @max(1 - std.math.pow(f32, rl.Vector2Distance(center, pos) / (shadow_res / 2), 3), 0);
+        rl.ImageDrawPixel(&img, @intCast(x), @intCast(y), rl.ColorAlpha(rl.BLACK, dist));
+    };
+
+    try images.append(img);
+    try names.append("shadow");
+
     const frames = try arena.alloc(resources.sprites.Frame, images.items.len);
     const image = try resources.sprites.pack(arena, images.items, frames, 128);
 
