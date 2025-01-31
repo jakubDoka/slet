@@ -12,9 +12,12 @@ const Self = @This();
 const Engine = engine.Level(Self);
 const World = ecs.World(engine.PackEnts(Self));
 
-pub const world_size_pow = 20;
+pub const world_size_pow = 12;
 pub const hit_tween_duration = 100;
 pub const time_limit = 1000 * 20;
+pub const tile_sheet = [_]rl.Rectangle{
+    textures.tile,
+};
 
 const keys = [_]c_int{ rl.KEY_W, rl.KEY_A, rl.KEY_S, rl.KEY_D };
 
@@ -299,10 +302,14 @@ pub const EnemyBullet = struct {
 };
 
 pub fn init(self: *Engine) void {
-    self.player = self.world.add(Player{ .reload = self.time + 100 });
+    for (0..Engine.TileMap.stride) |y| for (0..Engine.TileMap.stride) |x| {
+        if (self.prng.random().boolean()) self.tile_map.set(x, y, 0);
+    };
+
+    self.player = self.world.add(Player{ .pos = .{ 1000, 1000 }, .reload = self.time + 100 });
     self.initPhy(self.player, Player);
 
-    const trt = self.world.add(Turret{ .pos = .{ 600, 600 } });
+    const trt = self.world.add(Turret{ .pos = .{ 1800, 1000 } });
     self.initPhy(trt, Turret);
 }
 

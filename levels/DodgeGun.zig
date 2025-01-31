@@ -12,9 +12,12 @@ const Self = @This();
 const Engine = engine.Level(Self);
 const World = ecs.World(engine.PackEnts(Self));
 
-pub const world_size_pow = 20;
+pub const world_size_pow = 12;
 pub const hit_tween_duration = 100;
 pub const time_limit = 1000 * 15;
+pub const tile_sheet = [_]rl.Rectangle{
+    textures.tile,
+};
 
 const keys = [_]c_int{ rl.KEY_W, rl.KEY_A, rl.KEY_S, rl.KEY_D };
 
@@ -151,7 +154,7 @@ pub const FireParticle = struct {
 pub const Turret = struct {
     pub const friction: f32 = 1;
     pub const max_health: u32 = 300;
-    pub const size: f32 = 40;
+    pub const size: f32 = 50;
     pub const team: u32 = 1;
     pub const damage: u32 = 10;
     pub const sight: f32 = 1000;
@@ -285,10 +288,14 @@ pub const EnemyBullet = struct {
 };
 
 pub fn init(self: *Engine) void {
-    self.player = self.world.add(Player{ .reload = self.time + 100 });
+    for (0..Engine.TileMap.stride) |y| for (0..Engine.TileMap.stride) |x| {
+        if (self.prng.random().boolean()) self.tile_map.set(x, y, 0);
+    };
+
+    self.player = self.world.add(Player{ .pos = .{ 1000, 1000 }, .reload = self.time + 100 });
     self.initPhy(self.player, Player);
 
-    const trt = self.world.add(Turret{ .pos = .{ 800, 800 } });
+    const trt = self.world.add(Turret{ .pos = .{ 1850, 1000 } });
     self.initPhy(trt, Turret);
 }
 

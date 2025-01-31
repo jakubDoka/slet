@@ -12,52 +12,6 @@ pub fn Level(comptime Spec: type) type {
 
 const ColisionRec = struct { a: Id, b: Id, t: f32 };
 
-pub fn PackEnts(comptime S: type) type {
-    const decls = @typeInfo(S).Struct.decls;
-
-    var enum_buf: [decls.len]std.builtin.Type.EnumField = undefined;
-    var var_buf: [decls.len]std.builtin.Type.UnionField = undefined;
-    var count = 0;
-    for (decls) |d| {
-        const value = @field(S, d.name);
-        if (@TypeOf(value) != type) continue;
-        if (@typeInfo(value) != .Struct) continue;
-        if (@typeInfo(value).Struct.fields.len == 0) continue;
-        if (!std.meta.eql(@typeInfo(value).Struct.fields[0], @typeInfo(struct { id: Id = undefined }).Struct.fields[0])) continue;
-
-        const name = b: {
-            var buf: [64]u8 = undefined;
-            var i = 0;
-            for (d.name) |c| {
-                if (std.ascii.isUpper(c) and i != 0) {
-                    buf[i] = '_';
-                    i += 1;
-                }
-                buf[i] = std.ascii.toLower(c);
-                i += 1;
-            }
-            buf[i] = 0;
-            break :b buf[0..i :0];
-        };
-
-        enum_buf[count] = .{ .name = name, .value = count };
-        var_buf[count] = .{ .name = name, .type = value, .alignment = @alignOf(value) };
-        count += 1;
-    }
-
-    return @Type(.{ .Union = .{
-        .layout = .auto,
-        .tag_type = @Type(.{ .Enum = .{
-            .tag_type = std.math.IntFittingRange(0, count - 1),
-            .fields = enum_buf[0..count],
-            .decls = &.{},
-            .is_exhaustive = true,
-        } }),
-        .fields = var_buf[0..count],
-        .decls = &.{},
-    } });
-}
-
 const main = @import("main.zig");
 
 pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.SaveData) struct {
@@ -65,6 +19,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
     spec: Spec = .{},
     world: World,
     quad: Quad,
+    tile_map: TileMap,
 
     time: u32 = 0,
     boot_time: u32 = 0,
@@ -83,6 +38,38 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
     const Vec = vec.T;
     const Ents = PackEnts(Spec);
     const World = ecs.World(Ents);
+
+    pub const TileMap = struct {
+        const Tile = std.math.IntFittingRange(0, Spec.tile_sheet.len);
+        const no_tile = std.math.maxInt(Tile);
+        const tile_size: u32 = @intFromFloat(Spec.tile_sheet[0].width * 2);
+        pub const stride = (@as(u32, 1) << Spec.world_size_pow) / tile_size;
+        const size = stride * stride;
+
+        tiles: *[size]Tile,
+
+        inline fn project(v: f32) u32 {
+            return @intCast(std.math.clamp(@as(i32, @intFromFloat(v / tile_size)), 0, @as(i32, @intCast(stride - 1))));
+        }
+
+        pub inline fn set(self: *@This(), x: usize, y: usize, tile: Tile) void {
+            self.tiles[y * stride + x] = tile;
+        }
+
+        pub fn draw(game: *Self, view_port: rl.Rectangle) void {
+            const minx = project(view_port.x);
+            const miny = project(view_port.y);
+            const maxx = project(view_port.x + view_port.width + tile_size);
+            const maxy = project(view_port.y + view_port.height + tile_size);
+
+            for (miny..maxy) |y| for (minx..maxx) |x| {
+                const tile = game.tile_map.tiles[y * stride + x];
+                if (tile == no_tile) continue;
+                const pos = .{ vec.tof(x * tile_size), vec.tof(y * tile_size) };
+                game.drawTexture(Spec.tile_sheet[tile], pos, tile_size / 2, rl.ColorAlpha(rl.WHITE, 0.6));
+            };
+        }
+    };
 
     pub const Health = struct {
         points: u32,
@@ -211,6 +198,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         self.quad.deinit(self.gpa);
         self.to_delete.deinit();
         self.collisions.deinit();
+        self.gpa.destroy(self.tile_map.tiles);
 
         self.* = undefined;
     }
@@ -330,6 +318,12 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
 
         {
             rl.BeginMode2D(self.camera);
+
+            const tl = rl.GetScreenToWorld2D(.{}, self.camera);
+            const r = vec.tof(rl.GetScreenWidth());
+            const b = vec.tof(rl.GetScreenHeight());
+            const size = rl.Vector2Subtract(rl.GetScreenToWorld2D(.{ .x = r, .y = b }, self.camera), tl);
+            TileMap.draw(self, .{ .x = tl.x, .y = tl.y, .width = size.x, .height = size.y });
 
             if (@hasDecl(Spec, "drawWorld")) Spec.drawWorld(self);
 
@@ -551,6 +545,8 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         return std.math.sub(u32, until, self.time) catch null;
     }
 } {
+    const Self = Level(Spec);
+
     return .{
         .level_data = level_data,
         .gpa = gpa,
@@ -559,5 +555,58 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         .to_delete = std.ArrayList(Id).init(gpa),
         .collisions = std.ArrayList(ColisionRec).init(gpa),
         .quad = Quad.init(gpa, Spec.world_size_pow) catch unreachable,
+        .tile_map = .{
+            .tiles = b: {
+                const tiles = gpa.create([Self.TileMap.size]Self.TileMap.Tile) catch unreachable;
+                for (tiles) |*t| t.* = Self.TileMap.no_tile;
+                break :b tiles;
+            },
+        },
     };
+}
+
+pub fn PackEnts(comptime S: type) type {
+    const decls = @typeInfo(S).Struct.decls;
+
+    var enum_buf: [decls.len]std.builtin.Type.EnumField = undefined;
+    var var_buf: [decls.len]std.builtin.Type.UnionField = undefined;
+    var count = 0;
+    for (decls) |d| {
+        const value = @field(S, d.name);
+        if (@TypeOf(value) != type) continue;
+        if (@typeInfo(value) != .Struct) continue;
+        if (@typeInfo(value).Struct.fields.len == 0) continue;
+        if (!std.meta.eql(@typeInfo(value).Struct.fields[0], @typeInfo(struct { id: Id = undefined }).Struct.fields[0])) continue;
+
+        const name = b: {
+            var buf: [64]u8 = undefined;
+            var i = 0;
+            for (d.name) |c| {
+                if (std.ascii.isUpper(c) and i != 0) {
+                    buf[i] = '_';
+                    i += 1;
+                }
+                buf[i] = std.ascii.toLower(c);
+                i += 1;
+            }
+            buf[i] = 0;
+            break :b buf[0..i :0];
+        };
+
+        enum_buf[count] = .{ .name = name, .value = count };
+        var_buf[count] = .{ .name = name, .type = value, .alignment = @alignOf(value) };
+        count += 1;
+    }
+
+    return @Type(.{ .Union = .{
+        .layout = .auto,
+        .tag_type = @Type(.{ .Enum = .{
+            .tag_type = std.math.IntFittingRange(0, count - 1),
+            .fields = enum_buf[0..count],
+            .decls = &.{},
+            .is_exhaustive = true,
+        } }),
+        .fields = var_buf[0..count],
+        .decls = &.{},
+    } });
 }
