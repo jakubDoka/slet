@@ -28,7 +28,7 @@ const keys = [_]c_int{ rl.KEY_W, rl.KEY_A, rl.KEY_S, rl.KEY_D };
 
 const blue: rl.Color = @bitCast(std.mem.nativeToBig(u32, 0x59d2fdFF));
 const red: rl.Color = rl.ORANGE; //@bitCast(std.mem.nativeToBig(u32, 0xE3654AFF));
-const sub_reload = 200;
+const sub_reload = 120;
 const charge_count = 4;
 
 pub const Player = struct {
@@ -38,7 +38,7 @@ pub const Player = struct {
     pub const speed: f32 = 700;
     pub const team: u32 = 0;
     pub const damage: u32 = 0;
-    pub const reload: u32 = 2000;
+    pub const reload: u32 = 1200;
     pub const color = blue;
 
     id: Id = undefined,
@@ -158,13 +158,13 @@ pub const FireParticle = struct {
 
 pub const Turret = struct {
     pub const friction: f32 = 1;
-    pub const max_health: u32 = 200;
+    pub const max_health: u32 = 400;
     pub const size: f32 = 40;
     pub const team: u32 = 1;
     pub const damage: u32 = 10;
     pub const sight: f32 = 700;
     pub const turret_speed: f32 = std.math.tau;
-    pub const reload: u32 = 4000;
+    pub const reload: u32 = Player.reload * 2;
     pub const color = red;
     pub const Bullet = Self.EnemyBullet;
 

@@ -404,7 +404,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
 
         {
             const padding = 10;
-            const font_size = 25;
+            const font_size = 40;
             var cursor = Vec{ vec.tof(rl.GetScreenWidth()), padding };
             if (@hasDecl(Spec, "drawUi")) Spec.drawUi(self);
             if (@hasDecl(Spec, "time_limit")) b: {

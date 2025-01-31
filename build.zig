@@ -9,7 +9,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    const raylib_linux_dep = b.dependency("raylib", .{
+        .target = b.host,
+        .optimize = optimize,
+    });
+
     const raylib_artifact = raylib_dep.artifact("raylib");
+    const raylib_linux_artifact = raylib_linux_dep.artifact("raylib");
 
     const gen_exports_exe = b.addExecutable(.{
         .name = "gen_exports",
@@ -29,7 +35,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .target = b.host,
     });
-    gen_sprite_sheet_exe.linkLibrary(raylib_artifact);
+    gen_sprite_sheet_exe.linkLibrary(raylib_linux_artifact);
 
     const gen_sprite_sheet = b.addRunArtifact(gen_sprite_sheet_exe);
     gen_sprite_sheet.addDirectoryArg(b.path("assets/textures"));
