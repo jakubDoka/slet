@@ -186,7 +186,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
                 return;
             };
 
-            self.target = game.findEnemy(ctx) orelse Id.invalid;
+            self.target = game.findEnemy(ctx, null) orelse Id.invalid;
         }
     };
 
@@ -198,14 +198,14 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         self.camera.zoom = std.math.clamp(self.camera.zoom + scroll / 2, min_zoom, max_zoom);
     }
 
-    pub fn findEnemy(self: *Self, ctx: anytype) ?Id {
+    pub fn findEnemy(self: *Self, ctx: anytype, ignore_team: ?u32) ?Id {
         const pos = vec.asInt(ctx.pos);
         const size: i32 = @intFromFloat(@TypeOf(ctx.*).sight);
         const bds = .{ pos[0] - size, pos[1] - size, pos[0] + size, pos[1] + size };
         var iter = self.quad.queryIter(bds, 0);
         while (iter.next()) |quid| for (self.quad.entities(quid)) |rid| {
             const id: Id = @enumFromInt(rid);
-            if (@TypeOf(ctx.*).team == World.cnst(id, .team)) continue;
+            if (@TypeOf(ctx.*).team == World.cnst(id, .team) or World.cnst(id, .team) == ignore_team) continue;
             if (World.cnst(id, .max_health) == 0) continue;
             const opos = (self.world.field(id, .pos) orelse continue).*;
             if (vec.dist(opos, ctx.pos) > @TypeOf(ctx.*).sight) continue;
@@ -231,10 +231,10 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
     }
 
     pub fn drawReloadIndicators(self: *Self) void {
-        inline for (self.world.slct(enum { pos, reload })) |s| for (s) |ent| {
+        inline for (self.world.slct(enum { pos, reload_timer })) |s| for (s) |ent| {
             const Ent = @TypeOf(ent);
             if (@hasDecl(Ent, "reload") and @hasDecl(Ent, "size") and @hasDecl(Ent, "color")) {
-                self.drawReloadIndicator(ent.pos, ent.reload, Ent.reload, Ent.size, Ent.color);
+                self.drawReloadIndicator(ent.pos, ent.reload_timer, Ent.reload, Ent.size, Ent.color);
             }
         };
 

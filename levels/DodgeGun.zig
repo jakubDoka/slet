@@ -14,7 +14,7 @@ const World = ecs.World(engine.PackEnts(Self));
 
 pub const world_size_pow = 12;
 pub const hit_tween_duration = 100;
-pub const time_limit = 1000 * 15;
+pub const time_limit = 1000 * 9;
 pub const tile_sheet = [_]rl.Rectangle{
     textures.tile_full,
 };
@@ -236,7 +236,7 @@ pub const Bullet = struct {
             self.vel += dir * vec.splat(speed * 2 * delta);
             return;
         };
-        self.target = game.findEnemy(self) orelse Id.invalid;
+        self.target = game.findEnemy(self, null) orelse Id.invalid;
     }
 
     pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {
