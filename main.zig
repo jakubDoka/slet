@@ -18,6 +18,7 @@ const State = union(enum) {
 };
 
 pub var sheet: rl.Texture2D = undefined;
+pub var font: rl.Font = undefined;
 
 pub fn main() !void {
     loadGameData();
@@ -31,6 +32,9 @@ pub fn main() !void {
     const sheet_data = @embedFile("zig-out/sheet_image.png");
     const sheet_image = rl.LoadImageFromMemory(".png", sheet_data.ptr, @intCast(sheet_data.len));
     sheet = rl.LoadTextureFromImage(sheet_image);
+
+    const font_data = @embedFile("assets/fonts/slkscr.ttf");
+    font = rl.LoadFontFromMemory(".ttf", font_data.ptr, @intCast(font_data.len), 32, null, 95);
 
     var alloc = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = alloc.deinit();
@@ -54,7 +58,7 @@ pub fn main() !void {
                 allc.buffer[allc.end_index] = 0;
                 const name = allc.buffer[0..allc.end_index :0];
 
-                const text_size = vec.fromRl(rl.MeasureTextEx(rl.GetFontDefault(), name, font_size, spacing));
+                const text_size = vec.fromRl(rl.MeasureTextEx(font, name, font_size, spacing));
                 const size = text_size + vec.splat(padding * 2);
                 const text_pos = cursor + vec.splat(padding);
 
@@ -71,7 +75,7 @@ pub fn main() !void {
                 rl.DrawRectangleV(vec.asRl(cursor), vec.asRl(size), color);
                 color = rl.WHITE;
                 if (l.data.no_hit) color = rl.GOLD;
-                rl.DrawTextEx(rl.GetFontDefault(), name, vec.asRl(text_pos), font_size, spacing, color);
+                rl.DrawTextEx(font, name, vec.asRl(text_pos), font_size, spacing, color);
                 cursor[0] += size[0] + margin;
             }
         },

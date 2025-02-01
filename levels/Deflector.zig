@@ -38,7 +38,7 @@ pub const Player = struct {
     pub const speed: f32 = 700;
     pub const team: u32 = 0;
     pub const damage: u32 = 0;
-    pub const reload: u32 = 1200;
+    pub const reload: u32 = 800;
     pub const color = blue;
 
     id: Id = undefined,
@@ -164,7 +164,7 @@ pub const Turret = struct {
     pub const damage: u32 = 10;
     pub const sight: f32 = 700;
     pub const turret_speed: f32 = std.math.tau;
-    pub const reload: u32 = Player.reload * 2;
+    pub const reload: u32 = 2000;
     pub const color = red;
     pub const Bullet = Self.EnemyBullet;
 
@@ -191,15 +191,16 @@ pub const Turret = struct {
             self.charges += charge_count;
         }
 
-        if (self.charges != 0 and game.timer(&self.sub_reload, sub_reload)) {
+        if (self.charges != 0 and game.timer(&self.sub_reload, sub_reload)) b: {
             self.charges -= 1;
-            const target_pos = game.world.field(target, .pos).?.*;
-            const dir = vec.ang(self.pos - target_pos); // behind us
+            const sign: f32 = if (self.charges % 2 == 0) 1.0 else -1.0;
+            const target_pos = (game.world.field(target, .pos) orelse break :b).*;
+            const dir = vec.ang(target_pos - self.pos); // behind us
             const spread = std.math.pi / 2.0;
-            const final_dir = dir + -spread / 2.0 + (spread / @as(f32, charge_count - 1)) * vec.tof(self.charges);
+            const final_dir = dir + sign * ((spread / @as(f32, charge_count - 1)) * vec.tof(self.charges) + std.math.pi * 0.3);
             const bull = game.world.add(EnemyBullet{
                 .pos = self.pos + vec.rad(final_dir, size),
-                .vel = vec.rad(final_dir, EnemyBullet.speed),
+                .vel = vec.rad(final_dir, EnemyBullet.speed * 2),
                 .target = target,
                 .boot_time = game.time,
             });
@@ -246,7 +247,7 @@ pub const EnemyBullet = struct {
     pub const speed: f32 = 300;
     pub const friction: f32 = 0;
     pub const size: f32 = 20;
-    pub const team: u32 = 1;
+    pub const team: u32 = 2;
     pub const damage: u32 = 50;
     pub const max_health: u32 = 1;
 
@@ -279,15 +280,15 @@ pub const EnemyBullet = struct {
 
     pub fn update(self: *@This(), game: *Engine) void {
         const delta = rl.GetFrameTime();
-        const target_pos = game.world.field(self.target, .pos).?.*;
+        const target_pos = (game.world.field(self.target, .pos) orelse return).*;
         const coff = self.getCoff(game);
-        self.vel += vec.norm(target_pos - self.pos) * vec.splat(speed * 30 * coff * delta);
-        self.vel *= vec.splat(1 - 6 * coff * delta);
+        self.vel += vec.norm(target_pos - self.pos) * vec.splat(speed * 10 * coff * delta);
+        self.vel *= vec.splat(1 - 1 * coff * delta);
     }
 
     fn getCoff(self: *@This(), game: *Engine) f32 {
-        const efficiency = @min(game.timeRem(self.boot_time + 2000) orelse 0, 1400);
-        return std.math.pow(f32, 1 - vec.divToFloat(efficiency, 1400), 3);
+        const efficiency = std.math.sin(vec.divToFloat(game.time - self.boot_time, 400));
+        return @abs(std.math.pow(f32, efficiency, 3));
     }
 
     pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {
@@ -311,16 +312,17 @@ pub const EnemyBullet = struct {
 };
 
 pub fn init(self: *Engine) void {
-    for (1..Engine.TileMap.stride - 1) |y| for (1..Engine.TileMap.stride - 1) |x| {
-        if (self.prng.random().int(u2) == 0) {
-            self.tile_map.set(x, y, 0);
-        }
+    const s = Engine.TileMap.stride;
+    for (1..s - 1) |y| for (1..s - 1) |x| {
+        const coff = 1 - vec.dist(.{ vec.tof(x), vec.tof(y) }, .{ s / 2, s / 2 }) / (s / 2);
+        if (self.prng.random().float(f32) < coff) self.tile_map.set(x, y, 0);
     };
 
-    self.player = self.world.add(Player{ .pos = .{ 1000, 1000 }, .reload_timer = self.time + 100 });
+    const ws = (s / 2) * Engine.TileMap.tile_size;
+    self.player = self.world.add(Player{ .pos = .{ ws - 850, ws }, .reload_timer = self.time + 100 });
     self.initPhy(self.player, Player);
 
-    const trt = self.world.add(Turret{ .pos = .{ 1800, 1000 } });
+    const trt = self.world.add(Turret{ .pos = .{ ws, ws } });
     self.initPhy(trt, Turret);
 }
 

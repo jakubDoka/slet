@@ -299,14 +299,17 @@ pub const EnemyBullet = struct {
 };
 
 pub fn init(self: *Engine) void {
-    for (0..Engine.TileMap.stride) |y| for (0..Engine.TileMap.stride) |x| {
-        if (self.prng.random().boolean()) self.tile_map.set(x, y, 0);
+    const s = Engine.TileMap.stride;
+    for (1..s - 1) |y| for (1..s - 1) |x| {
+        const coff = 1 - vec.dist(.{ vec.tof(x), vec.tof(y) }, .{ s / 2, s / 2 }) / (s / 2);
+        if (self.prng.random().float(f32) < coff) self.tile_map.set(x, y, 0);
     };
 
-    self.player = self.world.add(Player{ .pos = .{ 1000, 1000 }, .reload_timer = self.time + 100 });
+    const ws = (s / 2) * Engine.TileMap.tile_size;
+    self.player = self.world.add(Player{ .pos = .{ ws - 850, ws }, .reload_timer = self.time + 100 });
     self.initPhy(self.player, Player);
 
-    const trt = self.world.add(Turret{ .pos = .{ 1850, 1000 } });
+    const trt = self.world.add(Turret{ .pos = .{ ws, ws } });
     self.initPhy(trt, Turret);
 }
 

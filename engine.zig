@@ -28,6 +28,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
     camera: rl.Camera2D = .{ .zoom = 1, .offset = .{ .x = 400, .y = 300 } },
     to_delete: std.ArrayList(Id),
     collisions: std.ArrayList(ColisionRec),
+    won: bool = false,
 
     gpa: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
@@ -42,7 +43,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
     pub const TileMap = struct {
         const Tile = std.math.IntFittingRange(0, Spec.tile_sheet.len);
         pub const no_tile = std.math.maxInt(Tile);
-        const tile_size: u32 = @intFromFloat(Spec.tile_sheet[0].width * 2);
+        pub const tile_size: u32 = @intFromFloat(Spec.tile_sheet[0].width * 2);
         pub const stride = (@as(u32, 1) << Spec.world_size_pow) / tile_size;
         const size = stride * stride;
 
@@ -300,19 +301,15 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
                 std.debug.assert(self.arena.reset(.retain_capacity));
                 self.time = @intFromFloat(rl.GetTime() * 1000);
 
-                if (self.update()) {
+                if (self.update() and !self.won) {
                     if (self.world.get(self.player, Player)) |p| {
-                        self.level_data.best_time = self.time - self.boot_time;
+                        self.level_data.best_time = @min(self.level_data.best_time, self.time - self.boot_time);
                         self.level_data.no_hit = self.level_data.no_hit or
                             (@hasDecl(Player, "max_health") and
                             p.health.points == Player.max_health);
                     }
-                    break;
+                    self.won = true;
                 }
-
-                if (@hasDecl(Spec, "time_limit") and
-                    self.timeRem(self.boot_time + Spec.time_limit) == null)
-                    break;
 
                 self.input();
 
@@ -329,6 +326,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
 
     pub fn reset(self: *Self) void {
         if (@hasDecl(Spec, "reset")) Spec.reset(self);
+        self.won = false;
         self.player = undefined;
         self.world.deinit();
         self.quad.deinit(self.gpa);
@@ -407,30 +405,28 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
             const font_size = 40;
             var cursor = Vec{ vec.tof(rl.GetScreenWidth()), padding };
             if (@hasDecl(Spec, "drawUi")) Spec.drawUi(self);
-            if (@hasDecl(Spec, "time_limit")) b: {
-                const spacing = 2;
 
-                const rem = self.timeRem(self.boot_time + Spec.time_limit) orelse break :b;
+            if (@hasDecl(Spec, "time_limit")) {
+                const spacing = 0;
+
+                const rem = @min(self.time - self.boot_time, self.level_data.best_time);
+
                 var buf: [32]u8 = undefined;
-
                 var allc = std.heap.FixedBufferAllocator.init(&buf);
+
                 const str = std.fmt.allocPrintZ(
-                    allc.allocator(),
-                    "{d}.{d}",
-                    .{ Spec.time_limit / 1000, 10 },
-                ) catch unreachable;
-
-                const text_size = vec.fromRl(rl.MeasureTextEx(rl.GetFontDefault(), str, font_size, spacing));
-
-                allc.reset();
-                const rstr = std.fmt.allocPrintZ(
                     allc.allocator(),
                     "{d}.{d}",
                     .{ rem / 1000, rem / 100 % 10 },
                 ) catch unreachable;
 
+                const text_size = vec.fromRl(rl.MeasureTextEx(main.font, str, font_size, spacing));
+
+                var color = rl.WHITE;
+                if (rem < Spec.time_limit) color = rl.GREEN;
+
                 cursor[0] -= text_size[0] + padding;
-                rl.DrawTextEx(rl.GetFontDefault(), rstr, vec.asRl(cursor), font_size, spacing, rl.WHITE);
+                rl.DrawTextEx(main.font, str, vec.asRl(cursor), font_size, spacing, color);
             }
 
             if (self.level_data.no_hit) {
