@@ -94,11 +94,12 @@ pub const Player = struct {
             const face = vec.norm(game.mousePos() - self.pos);
             const dir = vec.ang(face);
             const bull = game.world.add(Bullet{
-                .pos = self.pos + vec.rad(dir, game.prng.random().float(f32) * 20),
+                .pos = self.pos,
                 .vel = vec.rad(dir, Bullet.speed),
                 .live_until = game.time + Bullet.lifetime,
             });
             game.initPhy(bull, Bullet);
+            self.vel -= vec.rad(dir, 30);
         }
     }
 };
@@ -125,7 +126,7 @@ pub const FireParticle = struct {
 pub const Turret = struct {
     pub const friction: f32 = 1;
     pub const max_health: u32 = 400;
-    pub const size: f32 = 70;
+    pub const size: f32 = 55;
     pub const team: u32 = 1;
     pub const damage: u32 = 10;
     pub const sight: f32 = 700;
@@ -158,11 +159,11 @@ pub const Turret = struct {
             self.charges += charge_count;
         }
 
-        if (self.charges != 0 and game.timer(&self.sub_reload, 200)) b: {
+        if (self.charges != 0 and game.timer(&self.sub_reload, 160)) b: {
             self.charges -= 1;
             const target_pos = (game.world.field(target, .pos) orelse break :b).*;
             const dir = vec.ang(target_pos - self.pos); // behind us
-            const spread = std.math.pi;
+            const spread = std.math.pi * 0.8;
             const final_dir = dir + -spread / 2.0 + ((spread / @as(f32, charge_count - 1)) * vec.tof(self.charges));
             const bull = game.world.add(EnemyBullet{
                 .pos = self.pos + vec.rad(final_dir, size),
@@ -171,6 +172,7 @@ pub const Turret = struct {
                 .boot_time = game.time,
                 .rot = final_dir + std.math.pi / 2.0,
             });
+            self.vel -= vec.rad(final_dir, 30);
             game.initPhy(bull, EnemyBullet);
         }
     }
