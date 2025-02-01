@@ -5,6 +5,14 @@ zig version # 0.13.0
 zig build run
 ```
 
+## cross compile
+
+```sh
+zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-windows-gnu    # common windows devices
+zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-linux-gnu.2.35 # Ubuntu I guess
+zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-linux-musl     # any linux most likely
+```
+
 ## idea
 
 Each level should feature a setting that seems impossible but if the weapons are used in more creative way, the level should become easy, if not trivial. Completing a level without a hit and/or quickly can add a little bit of optional difficulty (maybe also unlock a bonus levels).

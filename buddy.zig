@@ -42,7 +42,7 @@ pub fn BuddyAllocator(
         pub const min_mem = base_cap * 2;
         pub const max_mem = 1 << max_cap_pow2;
         pub const uninit = switch (@typeInfo(T)) {
-            .Struct, .Union, .Enum, .Opaque => if (@hasDecl(T, "uninit"))
+            .@"struct", .@"union", .@"enum", .@"opaque" => if (@hasDecl(T, "uninit"))
                 T.uninit
             else
                 invertBits(sentinel),
@@ -225,10 +225,10 @@ pub fn BuddyAllocator(
         fn invertBits(value: anytype) @TypeOf(value) {
             var inverted: @TypeOf(value) = undefined;
             switch (@typeInfo(@TypeOf(value))) {
-                .Struct => |s| for (s.fields) |field| {
+                .@"struct" => |s| for (s.fields) |field| {
                     @field(inverted, field.name) = invertBits(@field(value, field.name));
                 },
-                .Int => inverted = ~value,
+                .int => inverted = ~value,
                 else => @compileError(
                     "unable to invert the element type to create value different from sentinel," ++
                         "add a declaration `const uninit: " ++ @typeName(T) ++ "` to supply this value",

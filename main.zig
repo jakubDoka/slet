@@ -23,9 +23,9 @@ pub fn main() !void {
     loadGameData();
 
     rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE);
-    rl.SetTargetFPS(60);
+    rl.SetTargetFPS(61);
 
-    rl.InitWindow(800, 600, "slet");
+    rl.InitWindow(1800, 1000, "slet");
     defer rl.CloseWindow();
 
     const sheet_data = @embedFile("zig-out/sheet_image.png");
@@ -127,7 +127,7 @@ pub const Level = struct {
     };
 
     var list = b: {
-        const decls = @typeInfo(levels).Struct.decls;
+        const decls = @typeInfo(levels).@"struct".decls;
         std.debug.assert(decls.len == order.len);
 
         var mem: [decls.len]Level = undefined;

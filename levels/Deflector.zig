@@ -46,7 +46,7 @@ pub const Player = struct {
     vel: Vec = vec.zero,
     health: Engine.Health = .{ .points = max_health },
     phys: Engine.Phy = .{},
-    reload: u32,
+    reload_timer: u32,
     charges: u32 = 0,
     sub_reload: u32 = 0,
 
@@ -93,7 +93,7 @@ pub const Player = struct {
             self.vel += vec.norm(dir) * vec.splat(speed * rl.GetFrameTime());
         }
 
-        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT) and game.timer(&self.reload, reload)) {
+        if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT) and game.timer(&self.reload_timer, reload)) {
             self.charges = charge_count;
         }
 
@@ -109,7 +109,7 @@ pub const Player = struct {
             game.initPhy(bull, Bullet);
         }
 
-        if (game.timeRem(self.reload)) |r| if (r > (reload - AfterImage.lifetime) and (r / 16) % 2 == 0) {
+        if (game.timeRem(self.reload_timer)) |r| if (r > (reload - AfterImage.lifetime) and (r / 16) % 2 == 0) {
             const face = vec.norm(game.mousePos() - self.pos);
             const dir = vec.ang(face);
             _ = game.world.add(AfterImage{
@@ -173,7 +173,7 @@ pub const Turret = struct {
     vel: Vec = vec.zero,
     health: Engine.Health = .{ .points = max_health },
     phys: Engine.Phy = .{},
-    reload: u32 = 0,
+    reload_timer: u32 = 0,
     sub_reload: u32 = 0,
     charges: u32 = 0,
     indicated_enemy: void = {},
@@ -187,7 +187,7 @@ pub const Turret = struct {
 
     pub fn update(self: *@This(), game: *Engine) void {
         const target = game.findEnemy(self) orelse return;
-        if (game.timer(&self.reload, reload)) {
+        if (game.timer(&self.reload_timer, reload)) {
             self.charges += charge_count;
         }
 
@@ -317,7 +317,7 @@ pub fn init(self: *Engine) void {
         }
     };
 
-    self.player = self.world.add(Player{ .pos = .{ 1000, 1000 }, .reload = self.time + 100 });
+    self.player = self.world.add(Player{ .pos = .{ 1000, 1000 }, .reload_timer = self.time + 100 });
     self.initPhy(self.player, Player);
 
     const trt = self.world.add(Turret{ .pos = .{ 1800, 1000 } });

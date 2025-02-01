@@ -224,8 +224,8 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         const scale = size / (texture.width / 2);
         const real_width = texture.width * scale;
         const real_height = texture.height * scale;
-        const dst = .{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
-        const origin = .{ .x = 0, .y = 0 };
+        const dst = rl.Rectangle{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
+        const origin = rl.Vector2{ .x = 0, .y = 0 };
         rl.DrawTexturePro(main.sheet, texture, dst, origin, 0, color);
     }
 
@@ -257,8 +257,8 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         const scale = size / (texture.width / 2);
         const real_width = texture.width * scale;
         const real_height = texture.height * scale;
-        const dst = .{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
-        const origin = .{ .x = real_width / 2, .y = real_height / 2 };
+        const dst = rl.Rectangle{ .x = pos[0], .y = pos[1], .width = real_width, .height = real_height };
+        const origin = rl.Vector2{ .x = real_width / 2, .y = real_height / 2 };
         rl.DrawTexturePro(main.sheet, texture, dst, origin, rot / std.math.tau * 360, color);
     }
 
@@ -638,7 +638,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
 }
 
 pub fn PackEnts(comptime S: type) type {
-    const decls = @typeInfo(S).Struct.decls;
+    const decls = @typeInfo(S).@"struct".decls;
 
     var enum_buf: [decls.len]std.builtin.Type.EnumField = undefined;
     var var_buf: [decls.len]std.builtin.Type.UnionField = undefined;
@@ -646,9 +646,9 @@ pub fn PackEnts(comptime S: type) type {
     for (decls) |d| {
         const value = @field(S, d.name);
         if (@TypeOf(value) != type) continue;
-        if (@typeInfo(value) != .Struct) continue;
-        if (@typeInfo(value).Struct.fields.len == 0) continue;
-        if (!std.meta.eql(@typeInfo(value).Struct.fields[0], @typeInfo(struct { id: Id = undefined }).Struct.fields[0])) continue;
+        if (@typeInfo(value) != .@"struct") continue;
+        if (@typeInfo(value).@"struct".fields.len == 0) continue;
+        if (!std.meta.eql(@typeInfo(value).@"struct".fields[0], @typeInfo(struct { id: Id = undefined }).@"struct".fields[0])) continue;
 
         const name = b: {
             var buf: [64]u8 = undefined;
@@ -670,9 +670,9 @@ pub fn PackEnts(comptime S: type) type {
         count += 1;
     }
 
-    return @Type(.{ .Union = .{
+    return @Type(.{ .@"union" = .{
         .layout = .auto,
-        .tag_type = @Type(.{ .Enum = .{
+        .tag_type = @Type(.{ .@"enum" = .{
             .tag_type = std.math.IntFittingRange(0, count - 1),
             .fields = enum_buf[0..count],
             .decls = &.{},

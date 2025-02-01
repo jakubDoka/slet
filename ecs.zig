@@ -14,7 +14,7 @@ pub fn World(comptime Ents: type) type {
         index: Num,
 
         const Num = std.meta.Int(.unsigned, @bitSizeOf(Index) - @bitSizeOf(EntKind));
-        const KindBits = @typeInfo(EntKind).Enum.tag_type;
+        const KindBits = @typeInfo(EntKind).@"enum".tag_type;
 
         pub fn eql(a: @This(), b: @This()) bool {
             return @as(Index, @bitCast(a)) == @as(Index, @bitCast(b));
@@ -50,7 +50,7 @@ pub fn World(comptime Ents: type) type {
 
         pub fn deinit(self: *Self) void {
             self.slots.deinit(self.gpa);
-            inline for (@typeInfo(Storage).Struct.fields) |f| {
+            inline for (@typeInfo(Storage).@"struct".fields) |f| {
                 @field(self.ents, f.name).deinit(self.gpa);
             }
             self.* = undefined;
@@ -68,7 +68,7 @@ pub fn World(comptime Ents: type) type {
         }
 
         pub fn invokeForAll(self: *Self, comptime tag: anytype, args: anytype) void {
-            inline for (@typeInfo(Ents).Union.fields) |f| {
+            inline for (@typeInfo(Ents).@"union".fields) |f| {
                 if (@hasDecl(f.type, @tagName(tag))) {
                     for (@field(self.ents, f.name).items) |*ent| {
                         @call(.always_inline, @field(f.type, @tagName(tag)), .{ent} ++ args);
@@ -78,15 +78,15 @@ pub fn World(comptime Ents: type) type {
         }
 
         pub fn CnstType(comptime tag: anytype) type {
-            return for (@typeInfo(Ents).Union.fields) |e| {
+            return for (@typeInfo(Ents).@"union".fields) |e| {
                 if (@hasDecl(e.type, @tagName(tag))) break @TypeOf(@field(e.type, @tagName(tag)));
             } else @compileError("no ents have an occurence of " ++ @tagName(tag));
         }
 
         pub fn cnst(id: Id, comptime tag: anytype) CnstType(tag) {
             const table = comptime b: {
-                var tbl = [_]CnstType(tag){0} ** @typeInfo(Ents).Union.fields.len;
-                for (@typeInfo(Ents).Union.fields, &tbl) |e, *t| {
+                var tbl = [_]CnstType(tag){0} ** @typeInfo(Ents).@"union".fields.len;
+                for (@typeInfo(Ents).@"union".fields, &tbl) |e, *t| {
                     if (@hasDecl(e.type, @tagName(tag))) t.* = @field(e.type, @tagName(tag));
                 }
                 const tb = tbl;
@@ -110,7 +110,7 @@ pub fn World(comptime Ents: type) type {
         }
 
         pub fn tagForPayload(comptime P: type) EntKind {
-            for (@typeInfo(Ents).Union.fields, 0..) |f, i| {
+            for (@typeInfo(Ents).@"union".fields, 0..) |f, i| {
                 if (f.type == P) return @enumFromInt(i);
             }
 
@@ -128,9 +128,9 @@ pub fn World(comptime Ents: type) type {
 
         pub fn Query(comptime Q: type) type {
             var count = 0;
-            var names: [@typeInfo(Ents).Union.fields.len]type = undefined;
-            for (@typeInfo(Ents).Union.fields) |f| {
-                if (for (@typeInfo(Q).Enum.fields) |fil| {
+            var names: [@typeInfo(Ents).@"union".fields.len]type = undefined;
+            for (@typeInfo(Ents).@"union".fields) |f| {
+                if (for (@typeInfo(Q).@"enum".fields) |fil| {
                     if (!@hasField(f.type, fil.name)) break false;
                 } else true) {
                     names[count] = []f.type;
@@ -143,8 +143,8 @@ pub fn World(comptime Ents: type) type {
         pub fn slct(self: *Self, comptime Q: type) Query(Q) {
             var iter: Query(Q) = undefined;
             comptime var i = 0;
-            inline for (@typeInfo(Ents).Union.fields) |f| {
-                if (comptime for (@typeInfo(Q).Enum.fields) |fil| {
+            inline for (@typeInfo(Ents).@"union".fields) |f| {
+                if (comptime for (@typeInfo(Q).@"enum".fields) |fil| {
                     if (!@hasField(f.type, fil.name)) break false;
                 } else true) {
                     iter[i] = @field(self.ents, f.name).items;
@@ -156,21 +156,21 @@ pub fn World(comptime Ents: type) type {
 
         const Size = std.math.IntFittingRange(0, b: {
             var max = 0;
-            for (@typeInfo(Ents).Union.fields) |f| max = @max(max, @sizeOf(f.type));
+            for (@typeInfo(Ents).@"union".fields) |f| max = @max(max, @sizeOf(f.type));
             break :b max;
         });
 
         const sizes = b: {
-            var arr: [@typeInfo(Ents).Union.fields.len]Size = undefined;
-            for (@typeInfo(Ents).Union.fields, &arr) |f, *s| s.* = @sizeOf(f.type);
+            var arr: [@typeInfo(Ents).@"union".fields.len]Size = undefined;
+            for (@typeInfo(Ents).@"union".fields, &arr) |f, *s| s.* = @sizeOf(f.type);
             break :b arr;
         };
 
-        fn offsets(comptime name: [:0]const u8) *const [@typeInfo(Ents).Union.fields.len]Size {
+        fn offsets(comptime name: [:0]const u8) *const [@typeInfo(Ents).@"union".fields.len]Size {
             // great xp zig...
             return comptime b: {
-                var arr: [@typeInfo(Ents).Union.fields.len]Size = undefined;
-                for (@typeInfo(Ents).Union.fields, &arr) |f, *so| {
+                var arr: [@typeInfo(Ents).@"union".fields.len]Size = undefined;
+                for (@typeInfo(Ents).@"union".fields, &arr) |f, *so| {
                     so.* = if (@hasField(f.type, name)) @offsetOf(f.type, name) else std.math.maxInt(Size);
                 }
                 const r = arr;
@@ -182,13 +182,13 @@ pub fn World(comptime Ents: type) type {
         }
 
         fn FieldType(name: [:0]const u8) type {
-            return for (@typeInfo(Ents).Union.fields) |f| {
+            return for (@typeInfo(Ents).@"union".fields) |f| {
                 if (@hasField(f.type, name)) break @TypeOf(@field(@as(f.type, undefined), name));
             } else @compileError("wah");
         }
 
         fn FieldStruct(comptime Q: type) type {
-            const decls = @typeInfo(Q).Enum.fields;
+            const decls = @typeInfo(Q).@"enum".fields;
 
             var stores: [decls.len]std.builtin.Type.StructField = undefined;
 
@@ -197,13 +197,13 @@ pub fn World(comptime Ents: type) type {
                 s.* = .{
                     .name = d.name,
                     .type = Str,
-                    .default_value = null,
+                    .default_value_ptr = null,
                     .is_comptime = false,
                     .alignment = @alignOf(Str),
                 };
             }
 
-            return @Type(.{ .Struct = .{
+            return @Type(.{ .@"struct" = .{
                 .layout = .auto,
                 .fields = &stores,
                 .decls = &.{},
@@ -211,12 +211,12 @@ pub fn World(comptime Ents: type) type {
             } });
         }
 
-        pub fn validEnts(comptime Q: type) *const std.StaticBitSet(@typeInfo(Ents).Union.fields.len) {
+        pub fn validEnts(comptime Q: type) *const std.StaticBitSet(@typeInfo(Ents).@"union".fields.len) {
             return comptime b: {
-                var set = std.StaticBitSet(@typeInfo(Ents).Union.fields.len).initEmpty();
+                var set = std.StaticBitSet(@typeInfo(Ents).@"union".fields.len).initEmpty();
 
-                for (@typeInfo(Ents).Union.fields, 0..) |f, i| {
-                    if (for (@typeInfo(Q).Enum.fields) |fil| {
+                for (@typeInfo(Ents).@"union".fields, 0..) |f, i| {
+                    if (for (@typeInfo(Q).@"enum".fields) |fil| {
                         if (!@hasField(f.type, fil.name)) break false;
                     } else true) {
                         set.set(i);
@@ -239,9 +239,9 @@ pub fn World(comptime Ents: type) type {
             if (!valid.isSet(raw.version.kind)) return null;
 
             const index = self.slots.items[raw.index].index;
-            const ents: *[@typeInfo(Ents).Union.fields.len]std.ArrayListUnmanaged(u8) = @ptrCast(&self.ents);
+            const ents: *[@typeInfo(Ents).@"union".fields.len]std.ArrayListUnmanaged(u8) = @ptrCast(&self.ents);
             var res: FieldStruct(Q) = undefined;
-            inline for (@typeInfo(Q).Enum.fields) |f| {
+            inline for (@typeInfo(Q).@"enum".fields) |f| {
                 const offs = offsets(f.name);
                 @field(res, f.name) = @alignCast(@ptrCast(&ents[raw.version.kind].items.ptr[sizes[raw.version.kind] * index + offs[raw.version.kind]]));
             }
@@ -257,7 +257,7 @@ pub fn World(comptime Ents: type) type {
             if (offs[raw.version.kind] == std.math.maxInt(Size)) return null;
 
             const index = self.slots.items[raw.index].index;
-            const ents: *[@typeInfo(Ents).Union.fields.len]std.ArrayListUnmanaged(u8) = @ptrCast(&self.ents);
+            const ents: *[@typeInfo(Ents).@"union".fields.len]std.ArrayListUnmanaged(u8) = @ptrCast(&self.ents);
 
             return @alignCast(@ptrCast(&ents[raw.version.kind].items.ptr[sizes[raw.version.kind] * index + offs[raw.version.kind]]));
         }
@@ -305,7 +305,7 @@ pub fn World(comptime Ents: type) type {
 }
 
 pub fn DeclEnum(comptime T: type) struct { type, type } {
-    const decls = @typeInfo(T).Union.fields;
+    const decls = @typeInfo(T).@"union".fields;
 
     var variants: [decls.len]std.builtin.Type.EnumField = undefined;
     var stores: [decls.len]std.builtin.Type.StructField = undefined;
@@ -319,13 +319,13 @@ pub fn DeclEnum(comptime T: type) struct { type, type } {
         s.* = .{
             .name = d.name,
             .type = Str,
-            .default_value = &Str{},
+            .default_value_ptr = &Str{},
             .is_comptime = false,
             .alignment = @alignOf(Str),
         };
     }
 
-    return .{ @typeInfo(T).Union.tag_type.?, @Type(.{ .Struct = .{
+    return .{ @typeInfo(T).@"union".tag_type.?, @Type(.{ .@"struct" = .{
         .layout = .auto,
         .fields = &stores,
         .decls = &.{},
