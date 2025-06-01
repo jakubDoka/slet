@@ -1,10 +1,9 @@
-const rl = @import("rl.zig").rl;
+const rl = @import("rl").rl;
 const std = @import("std");
 const ecs = @import("ecs.zig");
 const vec = @import("vec.zig");
 const engine = @import("engine.zig");
-const levels = @import("zig-out/levels.zig");
-pub const frames = @import("zig-out/sheet_frames.zig");
+pub const frames = @import("sheet_frames");
 
 const Id = ecs.Id;
 const Vec = vec.T;
@@ -29,7 +28,7 @@ pub fn main() !void {
     rl.InitWindow(1800, 1000, "slet");
     defer rl.CloseWindow();
 
-    const sheet_data = @embedFile("zig-out/sheet_image.png");
+    const sheet_data = @embedFile("sheet_image");
     const sheet_image = rl.LoadImageFromMemory(".png", sheet_data.ptr, @intCast(sheet_data.len));
     sheet = rl.LoadTextureFromImage(sheet_image);
 
@@ -50,6 +49,7 @@ pub fn main() !void {
             const font_size, const padding, const margin, const spacing = .{ 25, 10, 10, 2 };
             var cursor = vec.splat(10);
             var buf: [128]u8 = undefined;
+            const win_width: f32 = @floatFromInt(rl.GetScreenWidth());
             for (&Level.list) |*l| {
                 var allc = std.heap.FixedBufferAllocator.init(&buf);
                 _ = std.fmt.allocPrint(allc.allocator(), "{s}", .{l.name}) catch undefined;
@@ -60,6 +60,12 @@ pub fn main() !void {
 
                 const text_size = vec.fromRl(rl.MeasureTextEx(font, name, font_size, spacing));
                 const size = text_size + vec.splat(padding * 2);
+
+                if (cursor[0] + size[0] > win_width) {
+                    cursor[0] = 10;
+                    cursor[1] += size[1] + padding;
+                }
+
                 const text_pos = cursor + vec.splat(padding);
 
                 var color = rl.GRAY;
@@ -125,17 +131,18 @@ pub const Level = struct {
     run: *const fn (std.mem.Allocator, *SaveData) void,
     data: SaveData = .{},
 
-    const order = .{
-        "Deflector",
-        "DodgeGun",
+    const order = [_]type{
+        @import("levels/Deflector.zig"),
+        @import("levels/Ambush.zig"),
+        @import("levels/DodgeGun.zig"),
+        @import("levels/Covardice.zig"),
+        @import("levels/Toreador.zig"),
     };
 
     var list = b: {
-        const decls = @typeInfo(levels).@"struct".decls;
-        std.debug.assert(decls.len == order.len);
-
-        var mem: [decls.len]Level = undefined;
-        for (order, &mem) |dname, *l| {
+        var mem: [order.len]Level = undefined;
+        for (order, &mem) |level_struct, *l| {
+            const dname = @typeName(level_struct)["levels.".len..];
             const name = n: {
                 var buf: [64]u8 = undefined;
                 var i = 0;
@@ -155,7 +162,7 @@ pub const Level = struct {
                 .name = name,
                 .run = struct {
                     fn run(gpa: std.mem.Allocator, lvl_data: *SaveData) void {
-                        var level = engine.level(@field(levels, dname), gpa, lvl_data);
+                        var level = engine.level(level_struct, gpa, lvl_data);
                         defer level.deinit();
                         level.run();
                     }

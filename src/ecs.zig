@@ -56,11 +56,11 @@ pub fn World(comptime Ents: type) type {
             self.* = undefined;
         }
 
-        pub fn invoke(self: *Self, id: Id, comptime tag: anytype, args: anytype) ?void {
+        pub fn invoke(self: *Self, id: Id, comptime tag: anytype, args: anytype, comptime R: type) ?R {
             const raw = RawId.fromId(id);
             switch (@as(EntKind, @enumFromInt(raw.version.kind))) {
                 inline else => |t| if (@hasDecl(std.meta.TagPayload(Ents, t), @tagName(tag))) {
-                    return @call(.always_inline, @field(std.meta.TagPayload(Ents, t), @tagName(tag)), .{self.get(id, std.meta.TagPayload(Ents, t)) orelse return} ++ args);
+                    return @call(.always_inline, @field(std.meta.TagPayload(Ents, t), @tagName(tag)), .{self.get(id, std.meta.TagPayload(Ents, t)) orelse return null} ++ args);
                 },
             }
 
@@ -104,7 +104,7 @@ pub fn World(comptime Ents: type) type {
         pub fn get(self: *Self, id: Id, comptime T: type) ?*T {
             const tag = comptime tagForPayload(T);
             const raw = RawId.fromId(id);
-            std.debug.assert(@intFromEnum(tag) == raw.version.kind);
+            if (@intFromEnum(tag) != raw.version.kind) return null;
             if (!raw.version.eql(self.slots.items[raw.index].version)) return null;
             return &@field(self.ents, @tagName(tag)).items[self.slots.items[raw.index].index];
         }

@@ -1,5 +1,6 @@
 .{
-    .name = "raylib-zig",
+    .name = .slet,
+    .fingerprint = 0x56e1c8ed89ab147b,
     .version = "0.1.1",
     .dependencies = .{
         .raylib = .{

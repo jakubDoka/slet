@@ -1,7 +1,7 @@
 const std = @import("std");
 const ecs = @import("ecs.zig");
-const rl = @import("rl.zig").rl;
-const textures = @import("zig-out/sheet_frames.zig");
+const rl = @import("rl").rl;
+const textures = @import("sheet_frames");
 
 const Quad = @import("QuadTree.zig");
 const Id = ecs.Id;
@@ -152,7 +152,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         reload: u32 = 0,
         target: Id = Id.invalid,
 
-        pub fn update(self: *@This(), ctx: anytype, game: *Self) void {
+        pub fn update(self: *@This(), ctx: anytype, game: *Self) bool {
             const Bullet = @TypeOf(ctx.*).Bullet;
 
             if (self.target != Id.invalid) if (game.world.field(self.target, .pos)) |target| b: {
@@ -175,18 +175,15 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
                 const offset_tolerance = std.math.asin(max_dist / vec.dist(pos, ctx.pos));
 
                 if (@abs(self.rot - vec.ang(pos - ctx.pos)) < offset_tolerance and game.timer(&self.reload, @TypeOf(ctx.*).reload)) {
-                    const bull = game.world.add(Bullet{
-                        .pos = ctx.pos,
-                        .vel = ctx.vel + vec.rad(self.rot, Bullet.speed),
-                        .live_until = game.time + Bullet.lifetime,
-                    });
-                    game.initPhy(bull, Bullet);
+                    return true;
                 }
 
-                return;
+                return false;
             };
 
             self.target = game.findEnemy(ctx, null) orelse Id.invalid;
+
+            return false;
         }
     };
 
@@ -199,10 +196,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
     }
 
     pub fn findEnemy(self: *Self, ctx: anytype, ignore_team: ?u32) ?Id {
-        const pos = vec.asInt(ctx.pos);
-        const size: i32 = @intFromFloat(@TypeOf(ctx.*).sight);
-        const bds = .{ pos[0] - size, pos[1] - size, pos[0] + size, pos[1] + size };
-        var iter = self.quad.queryIter(bds, 0);
+        var iter = self.queryArea(ctx.pos, @TypeOf(ctx.*).sight);
         while (iter.next()) |quid| for (self.quad.entities(quid)) |rid| {
             const id: Id = @enumFromInt(rid);
             if (@TypeOf(ctx.*).team == World.cnst(id, .team) or World.cnst(id, .team) == ignore_team) continue;
@@ -212,6 +206,13 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
             return id;
         };
         return null;
+    }
+
+    pub fn queryArea(self: *Self, ps: Vec, radius: f32) Quad.Query {
+        const pos = vec.asInt(ps);
+        const size: i32 = @intFromFloat(radius);
+        const bds = .{ pos[0] - size, pos[1] - size, pos[0] + size, pos[1] + size };
+        return self.quad.queryIter(bds, 0);
     }
 
     pub fn mousePos(self: *Self) Vec {
@@ -248,8 +249,13 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
 
     pub fn drawReloadIndicator(self: *Self, pos: Vec, progress: u32, reload: u32, size: f32, color: rl.Color) void {
         if (self.timeRem(progress)) |rem| {
-            const end = 360 * (1 - vec.divToFloat(rem, reload));
-            rl.DrawRing(vec.asRl(pos), size + 10, size + 14, 0.0, end, 50, color);
+            const segments = 8;
+            const step = 360 / segments;
+            for (0..segments) |i| {
+                const end = step * (1 - vec.divToFloat(rem, reload));
+                const base: f32 = @floatFromInt(i * step);
+                rl.DrawRing(vec.asRl(pos), size + 10, size + 14, base, base + end, 50, color);
+            }
         }
     }
 
@@ -306,7 +312,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
                         self.level_data.best_time = @min(self.level_data.best_time, self.time - self.boot_time);
                         self.level_data.no_hit = self.level_data.no_hit or
                             (@hasDecl(Player, "max_health") and
-                            p.health.points == Player.max_health);
+                                p.health.points == Player.max_health);
                     }
                     self.won = true;
                 }
@@ -341,7 +347,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         if (@hasDecl(Spec, "update")) finished = Spec.update(self);
 
         for (self.to_delete.items) |id| {
-            _ = self.world.invoke(id, .onDelete, .{self});
+            _ = self.world.invoke(id, .onDelete, .{self}, void);
             if (self.world.field(id, .phys)) |phys| {
                 self.quad.remove(self.gpa, phys.quad, @intFromEnum(id));
             }
@@ -457,7 +463,7 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
         while (iter.next()) |quid| for (self.quad.entities(quid)) |uid| {
             const id: Id = @enumFromInt(uid);
 
-            if (self.world.invoke(id, .draw, .{self}) == null) {
+            if (self.world.invoke(id, .draw, .{self}, void) == null) {
                 rl.DrawCircleV(vec.asRl(self.world.field(id, .pos).?.*), World.cnst(id, .size), rl.RED);
             }
         };
@@ -584,8 +590,10 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
             const dist = vec.dist(pb.pos.*, opb.pos.*);
 
             {
-                const mass = util.mass(World.cnst(col.a, .size));
-                const amass = util.mass(World.cnst(col.b, .size));
+                const mult = self.world.invoke(col.a, .massMult, .{self}, f32) orelse 1;
+                const amult = self.world.invoke(col.a, .massMult, .{self}, f32) orelse 1;
+                const mass = util.mass(World.cnst(col.a, .size)) * mult;
+                const amass = util.mass(World.cnst(col.b, .size)) * amult;
 
                 const norm = (opb.pos.* - pb.pos.*) / vec.splat(dist);
                 const p = 2 * (vec.dot(pb.vel.*, norm) - vec.dot(opb.vel.*, norm)) / (mass + amass);
@@ -597,8 +605,8 @@ pub fn level(comptime Spec: type, gpa: std.mem.Allocator, level_data: *main.Save
                 }
             }
 
-            _ = self.world.invoke(col.a, .onCollision, .{ self, col.b });
-            _ = self.world.invoke(col.b, .onCollision, .{ self, col.a });
+            _ = self.world.invoke(col.a, .onCollision, .{ self, col.b }, void);
+            _ = self.world.invoke(col.b, .onCollision, .{ self, col.a }, void);
         }
         self.collisions.items.len = 0;
     }

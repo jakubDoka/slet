@@ -2,8 +2,8 @@ const std = @import("std");
 const ecs = @import("../ecs.zig");
 const vec = @import("../vec.zig");
 const engine = @import("../engine.zig");
-const rl = @import("../rl.zig").rl;
-const textures = @import("../zig-out/sheet_frames.zig");
+const rl = @import("rl").rl;
+const textures = @import("sheet_frames");
 
 const Id = ecs.Id;
 const Vec = vec.T;
@@ -33,10 +33,10 @@ pub const Player = struct {
     pub const friction: f32 = 1;
     pub const max_health: u32 = 100;
     pub const size: f32 = 20;
-    pub const speed: f32 = 700;
+    pub const speed: f32 = 900;
     pub const team: u32 = 0;
     pub const damage: u32 = 0;
-    pub const reload: u32 = 500;
+    pub const reload: u32 = 800;
     pub const color = blue;
 
     id: Id = undefined,
@@ -94,21 +94,21 @@ pub const Player = struct {
             const face = vec.norm(game.mousePos() - self.pos);
             const dir = vec.ang(face);
 
-            for (0..10) |_| {
+            for (0..15) |_| {
                 const spreadf = std.math.pi * 0.2;
                 const tdir = dir - spreadf + game.prng.random().float(f32) * spreadf * 2;
                 const spread = std.math.pi * 0.2;
                 const vdir = dir - spread + game.prng.random().float(f32) * spread * 2;
 
                 const bull = game.world.add(Bullet{
-                    .pos = self.pos + vec.rad(vdir, game.prng.random().float(f32) * 20),
-                    .vel = vec.rad(tdir, Bullet.speed),
+                    .pos = self.pos + vec.rad(vdir, game.prng.random().float(f32) * 10 + 20),
+                    .vel = vec.rad(tdir, -Bullet.speed),
                     .live_until = game.time + Bullet.lifetime,
                 });
                 game.initPhy(bull, Bullet);
             }
 
-            self.vel -= face * vec.splat(400);
+            self.vel -= face * vec.splat(500);
         }
 
         if (game.timeRem(self.reload_timer)) |r| if (r > (reload - AfterImage.lifetime) and (r / 16) % 2 == 0) {
@@ -158,43 +158,83 @@ pub const FireParticle = struct {
     }
 };
 
-pub const Turret = struct {
-    pub const friction: f32 = 1;
-    pub const max_health: u32 = 300;
-    pub const size: f32 = 50;
-    pub const team: u32 = 1;
-    pub const damage: u32 = 10;
-    pub const sight: f32 = 1000;
-    pub const reload: u32 = 800;
-    pub const turret_speed: f32 = std.math.tau;
+pub const Bull = struct {
     pub const color = red;
-    pub const Bullet = Self.EnemyBullet;
+    pub const speed: f32 = 1200;
+    pub const friction: f32 = 0;
+    pub const size: f32 = 35;
+    pub const team: u32 = 2;
+    pub const damage: u32 = 34;
+    pub const max_health: u32 = 400;
 
     id: Id = undefined,
     pos: Vec,
     vel: Vec = vec.zero,
-    health: Engine.Health = .{ .points = max_health },
     phys: Engine.Phy = .{},
-    turret: Engine.Turret = .{},
+    health: Engine.Health = .{ .points = max_health },
+    locked_until: u32 = 0,
+    rot: f32 = 0,
     indicated_enemy: void = {},
 
     pub fn draw(self: *@This(), game: *Engine) void {
         const tone = self.health.draw(self, game);
         const col = vec.fcolor(1, tone, tone);
 
-        game.drawCenteredTexture(textures.shadow, self.pos, 0, size * 1.2, rl.WHITE);
-        game.drawCenteredTexture(textures.turret, self.pos, 0, size, col);
-        game.drawCenteredTexture(textures.shadow, self.pos, 0, size * 1.1, rl.WHITE);
-        game.drawCenteredTexture(textures.turret_cannon, self.pos, self.turret.rot, size, col);
+        game.drawCenteredTexture(textures.shadow, self.pos, self.rot, size * 1.2, rl.WHITE);
+        game.drawCenteredTexture(textures.turret, self.pos, self.rot, size, col);
+    }
+
+    pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {
+        const health: *Engine.Health = game.world.field(other, .health) orelse return;
+        _ = health.takeDamage(self, other, game);
     }
 
     pub fn update(self: *@This(), game: *Engine) void {
-        self.turret.update(self, game);
+        const delta = rl.GetFrameTime();
+        const target = game.world.get(game.player, Player) orelse return;
+        const target_pos = vec.predictTarget(self.pos, target.pos, target.vel, speed * 2) orelse return;
+        const dir = vec.ang(target_pos - self.pos);
+
+        if (self.locked_until < game.time) {
+            self.rot = vec.moveTowardsAngle(self.rot, dir, delta * std.math.tau * 4);
+            self.rot = vec.normalizeAng(self.rot);
+            self.vel *= vec.splat(1 - 3 * delta);
+            if (self.rot == dir) {
+                self.locked_until = game.time + Player.reload;
+                self.vel = vec.rad(dir, speed);
+
+                for (0..20) |_| {
+                    _ = game.world.add(FireParticle{
+                        .pos = self.pos + self.vel * vec.splat(-rl.GetFrameTime()),
+                        .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
+                            vec.splat(200),
+                        .live_until = game.time + 240 - game.prng.random().int(u32) % 100,
+                        .size = 10,
+                        .color = red,
+                    });
+                }
+            }
+        }
+    }
+
+    pub fn onDelete(self: *@This(), game: *Engine) void {
+        for (0..25) |_| {
+            _ = game.world.add(FireParticle{
+                .pos = self.pos + vec.unit(game.prng.random().float(f32) * std.math.tau) *
+                    vec.splat(20) + self.vel * vec.splat(-rl.GetFrameTime()),
+                .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
+                    vec.splat(500),
+                .lifetime = 300,
+                .live_until = game.time + 400 - game.prng.random().int(u32) % 80,
+                .size = 25,
+                .color = red,
+            });
+        }
     }
 };
 
 pub const Bullet = struct {
-    pub const speed: f32 = 500;
+    pub const speed: f32 = 100;
     pub const friction: f32 = 3;
     pub const size: f32 = 7;
     pub const team: u32 = 0;
@@ -246,58 +286,6 @@ pub const Bullet = struct {
     }
 };
 
-pub const EnemyBullet = struct {
-    pub const speed: f32 = 900;
-    pub const friction: f32 = 0;
-    pub const size: f32 = 20;
-    pub const team: u32 = 1;
-    pub const damage: u32 = 25;
-    pub const lifetime: u32 = 1000;
-
-    id: Id = undefined,
-    pos: Vec,
-    vel: Vec,
-    phys: Engine.Phy = .{},
-    live_until: u32,
-
-    pub fn draw(self: *@This(), game: *Engine) void {
-        const emit_pos = self.pos + vec.norm(self.vel) * vec.splat(-size * 0.8);
-        const intensity = 15;
-
-        for (0..3) |_| {
-            _ = game.world.add(FireParticle{
-                .pos = emit_pos + self.vel * vec.splat(rl.GetFrameTime()),
-                .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
-                    vec.splat(100),
-                .live_until = game.time + 100 - game.prng.random().int(u32) % 40,
-                .size = intensity,
-                .color = red,
-            });
-        }
-
-        game.drawCenteredTexture(textures.enemy_bullet, self.pos, vec.ang(self.vel), size, rl.WHITE);
-    }
-
-    pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {
-        const health: *Engine.Health = game.world.field(other, .health) orelse return;
-        _ = health.takeDamage(self, other, game);
-        game.queueDelete(self.id);
-    }
-
-    pub fn onDelete(self: *@This(), game: *Engine) void {
-        for (0..10) |_| {
-            _ = game.world.add(FireParticle{
-                .pos = self.pos + self.vel * vec.splat(-rl.GetFrameTime()),
-                .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
-                    vec.splat(200),
-                .live_until = game.time + 200 - game.prng.random().int(u32) % 80,
-                .size = 15,
-                .color = red,
-            });
-        }
-    }
-};
-
 pub fn init(self: *Engine) void {
     const s = Engine.TileMap.stride;
     for (1..s - 1) |y| for (1..s - 1) |x| {
@@ -309,8 +297,8 @@ pub fn init(self: *Engine) void {
     self.player = self.world.add(Player{ .pos = .{ ws - 850, ws }, .reload_timer = self.time + 100 });
     self.initPhy(self.player, Player);
 
-    const trt = self.world.add(Turret{ .pos = .{ ws, ws } });
-    self.initPhy(trt, Turret);
+    const trt = self.world.add(Bull{ .pos = .{ ws, ws } });
+    self.initPhy(trt, Bull);
 }
 
 pub fn input(self: *Engine) void {
@@ -332,5 +320,5 @@ pub fn update(self: *Engine) bool {
     self.folowWithCamera(player.pos, 0.49);
     self.killTemporaryEnts();
 
-    return self.world.ents.turret.items.len == 0;
+    return self.world.ents.bull.items.len == 0;
 }

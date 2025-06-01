@@ -1,4 +1,4 @@
-const rl = @import("rl.zig").rl;
+const rl = @import("rl").rl;
 const std = @import("std");
 
 pub const sprites = struct {

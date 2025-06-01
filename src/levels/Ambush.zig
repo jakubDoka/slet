@@ -2,8 +2,8 @@ const std = @import("std");
 const ecs = @import("../ecs.zig");
 const vec = @import("../vec.zig");
 const engine = @import("../engine.zig");
-const rl = @import("../rl.zig").rl;
-const textures = @import("../zig-out/sheet_frames.zig");
+const rl = @import("rl").rl;
+const textures = @import("sheet_frames");
 
 const Id = ecs.Id;
 const Vec = vec.T;
@@ -14,7 +14,7 @@ const World = ecs.World(engine.PackEnts(Self));
 
 pub const world_size_pow = 12;
 pub const hit_tween_duration = 100;
-pub const time_limit = 1000 * 10;
+pub const time_limit = 1000 * 9;
 pub const tile_sheet = [_]rl.Rectangle{
     textures.tile_full,
 };
@@ -27,18 +27,18 @@ pub const weng_tiles = [_]rl.Rectangle{
 const keys = [_]c_int{ rl.KEY_W, rl.KEY_A, rl.KEY_S, rl.KEY_D };
 
 const blue: rl.Color = @bitCast(std.mem.nativeToBig(u32, 0x59d2fdFF));
-const red: rl.Color = rl.ORANGE; //@bitCast(std.mem.nativeToBig(u32, 0xE3654AFF));
-const sub_reload = 50;
+const red: rl.Color = @bitCast(std.mem.nativeToBig(u32, 0xE3654AFF));
 
 pub const Player = struct {
     pub const friction: f32 = 1;
     pub const max_health: u32 = 200;
     pub const size: f32 = 20;
-    pub const speed: f32 = 800;
+    pub const speed: f32 = 700;
     pub const team: u32 = 0;
-    pub const damage: u32 = 0;
-    pub const reload: u32 = 150;
+    pub const damage: u32 = 50;
+    pub const reload: u32 = 500;
     pub const color = blue;
+    pub const sheeld_thickness: f32 = 20;
 
     id: Id = undefined,
     pos: Vec = vec.zero,
@@ -49,6 +49,7 @@ pub const Player = struct {
 
     pub fn draw(self: *@This(), game: *Engine) void {
         const dir = game.mousePos() - self.pos;
+        game.drawCenteredTexture(textures.shadow, self.pos - vec.norm(dir) * vec.splat(5), 0, size * 1.1, rl.WHITE);
         const ang = vec.ang(dir);
 
         var boost_dir = vec.zero;
@@ -92,15 +93,94 @@ pub const Player = struct {
 
         if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT) and game.timer(&self.reload_timer, reload)) {
             const face = vec.norm(game.mousePos() - self.pos);
-            const dir = vec.ang(face);
-            const bull = game.world.add(Bullet{
+
+            self.vel += face * vec.splat(700);
+            const shi = game.world.add(Shield{
                 .pos = self.pos,
-                .vel = vec.rad(dir, Bullet.speed),
-                .live_until = game.time + Bullet.lifetime,
+                .vel = self.vel,
+                .follow = self.id,
+                .live_until = game.time + 400,
             });
-            game.initPhy(bull, Bullet);
-            self.vel -= vec.rad(dir, 30);
+            game.initPhy(shi, Shield);
         }
+
+        if (game.timeRem(self.reload_timer)) |r| if (r > (reload - AfterImage.lifetime) and (r / 16) % 2 == 0) {
+            const face = vec.norm(game.mousePos() - self.pos);
+            const dir = vec.ang(face);
+            _ = game.world.add(AfterImage{
+                .pos = self.pos,
+                .rot = dir,
+                .live_until = game.time + AfterImage.lifetime,
+            });
+        };
+    }
+};
+
+pub const Shield = struct {
+    pub const friction: f32 = 1;
+    pub const max_health: u32 = 200;
+    pub const size: f32 = Player.size + 5;
+    pub const speed: f32 = 700;
+    pub const team: u32 = 0;
+    pub const damage: u32 = 50;
+    pub const reload: u32 = 500;
+    pub const color = blue;
+
+    id: Id = undefined,
+    pos: Vec,
+    vel: Vec,
+    phys: Engine.Phy = .{},
+    live_until: u32,
+    follow: Id,
+
+    pub fn draw(self: *@This(), game: *Engine) void {
+        const dir = game.mousePos() - self.pos;
+        const ang = vec.ang(dir);
+
+        const spread = std.math.pi;
+        for (0..10) |_| {
+            const off = spread / 2.0 - game.prng.random().float(f32) * spread;
+            const emit_pos = self.pos + vec.rad(ang + off, size);
+
+            _ = game.world.add(FireParticle{
+                .pos = emit_pos + self.vel * vec.splat(rl.GetFrameTime()),
+                .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
+                    vec.splat(100),
+                .live_until = game.time + 200,
+                .lifetime = 200,
+                .size = 10,
+                .color = blue,
+            });
+        }
+    }
+
+    pub fn update(self: *@This(), game: *Engine) void {
+        const player = game.world.get(self.follow, Player) orelse return;
+        self.pos = player.pos;
+        self.vel = player.vel;
+    }
+
+    pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {
+        const health: *Engine.Health = game.world.field(other, .health) orelse return;
+        _ = health.takeDamage(self, other, game);
+        if (game.world.get(self.follow, Player)) |p| p.vel = self.vel;
+        //game.queueDelete(self.id);
+    }
+};
+
+pub const AfterImage = struct {
+    pub const lifetime = 150;
+
+    id: Id = undefined,
+    pos: Vec,
+    rot: f32,
+    live_until: u32,
+    particle: void = {},
+
+    pub fn draw(self: *@This(), game: *Engine) void {
+        const rate = vec.divToFloat(game.timeRem(self.live_until) orelse 0, lifetime);
+        const color = rl.ColorAlpha(rl.WHITE, rate);
+        game.drawCenteredTexture(textures.player, self.pos, self.rot, Player.size, color);
     }
 };
 
@@ -125,78 +205,63 @@ pub const FireParticle = struct {
 
 pub const Turret = struct {
     pub const friction: f32 = 1;
-    pub const max_health: u32 = 400;
-    pub const size: f32 = 55;
+    pub const max_health: u32 = 300;
+    pub const size: f32 = 50;
     pub const team: u32 = 1;
     pub const damage: u32 = 10;
-    pub const sight: f32 = 700;
+    pub const sight: f32 = 1000;
+    pub const reload: u32 = 1000;
     pub const turret_speed: f32 = std.math.tau;
-    pub const reload: u32 = 10000;
     pub const color = red;
     pub const Bullet = Self.EnemyBullet;
-    const charge_count = 8;
+    pub const charge_count: u32 = 4;
 
     id: Id = undefined,
     pos: Vec,
     vel: Vec = vec.zero,
     health: Engine.Health = .{ .points = max_health },
     phys: Engine.Phy = .{},
-    reload_timer: u32 = 0,
+    turret: Engine.Turret = .{},
+    indicated_enemy: void = {},
     sub_reload: u32 = 0,
     charges: u32 = 0,
-    indicated_enemy: void = {},
+    n: f32 = 1,
 
     pub fn draw(self: *@This(), game: *Engine) void {
         const tone = self.health.draw(self, game);
         const col = vec.fcolor(1, tone, tone);
+
         game.drawCenteredTexture(textures.shadow, self.pos, 0, size * 1.2, rl.WHITE);
         game.drawCenteredTexture(textures.turret, self.pos, 0, size, col);
+        game.drawCenteredTexture(textures.shadow, self.pos, 0, size * 1.1, rl.WHITE);
+        game.drawCenteredTexture(textures.turret_cannon, self.pos, self.turret.rot, size, col);
     }
 
     pub fn update(self: *@This(), game: *Engine) void {
-        const target = game.findEnemy(self, 2) orelse return;
-        if (game.timer(&self.reload_timer, reload)) {
+        if (self.turret.update(self, game)) {
             self.charges += charge_count;
+            self.n *= -1;
         }
 
-        if (self.charges != 0 and game.timer(&self.sub_reload, 160)) b: {
+        if (self.charges != 0 and game.timer(&self.sub_reload, 50)) {
+            //const offset = @as(f32, @floatFromInt(charge_count - self.charges)) * 30;
             self.charges -= 1;
-            const target_pos = (game.world.field(target, .pos) orelse break :b).*;
-            const dir = vec.ang(target_pos - self.pos); // behind us
-            const spread = std.math.pi * 0.8;
-            const final_dir = dir + -spread / 2.0 + ((spread / @as(f32, charge_count - 1)) * vec.tof(self.charges));
             const bull = game.world.add(EnemyBullet{
-                .pos = self.pos + vec.rad(final_dir, size),
-                .vel = vec.rad(final_dir, EnemyBullet.speed),
-                .target = target,
-                .boot_time = game.time,
-                .rot = final_dir + std.math.pi / 2.0,
+                .pos = self.pos + vec.rad(self.turret.rot, size), //+ vec.rad(self.turret.rot + std.math.pi * 0.5 * self.n, offset),
+                .vel = self.vel + vec.rad(self.turret.rot, EnemyBullet.speed),
+                .live_until = game.time + EnemyBullet.lifetime,
             });
-            self.vel -= vec.rad(final_dir, 30);
             game.initPhy(bull, EnemyBullet);
-        }
-    }
-
-    pub fn onDelete(self: *@This(), game: *Engine) void {
-        for (0..30) |_| {
-            _ = game.world.add(FireParticle{
-                .pos = self.pos + self.vel * vec.splat(-rl.GetFrameTime()),
-                .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
-                    vec.splat(500),
-                .live_until = game.time + 300 - game.prng.random().int(u32) % 100,
-                .size = 30,
-                .color = red,
-            });
         }
     }
 };
 
-pub const Bullet = struct {
+pub const EnemyBullet = struct {
     pub const speed: f32 = 900;
     pub const friction: f32 = 0;
-    pub const size: f32 = 5;
-    pub const team: u32 = 0;
-    pub const damage: u32 = 5;
+    pub const size: f32 = 20;
+    pub const team: u32 = 2;
+    pub const damage: u32 = 50;
     pub const lifetime: u32 = 1000;
 
     id: Id = undefined,
@@ -207,110 +272,37 @@ pub const Bullet = struct {
 
     pub fn draw(self: *@This(), game: *Engine) void {
         const emit_pos = self.pos + vec.norm(self.vel) * vec.splat(-size * 0.8);
+        const intensity = 15;
 
-        _ = game.world.add(FireParticle{
-            .pos = emit_pos + self.vel * vec.splat(rl.GetFrameTime()),
-            .vel = vec.zero,
-            .lifetime = 300,
-            .live_until = game.time + 300,
-            .size = size * 2,
-            .color = blue,
-        });
+        for (0..3) |_| {
+            _ = game.world.add(FireParticle{
+                .pos = emit_pos + self.vel * vec.splat(rl.GetFrameTime()),
+                .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
+                    vec.splat(100),
+                .live_until = game.time + 100 - game.prng.random().int(u32) % 40,
+                .size = intensity,
+                .color = red,
+            });
+        }
+
+        game.drawCenteredTexture(textures.enemy_bullet, self.pos, vec.ang(self.vel), size, rl.WHITE);
     }
 
     pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {
         const health: *Engine.Health = game.world.field(other, .health) orelse return;
         _ = health.takeDamage(self, other, game);
-        game.queueDelete(self.id);
-    }
-};
-
-pub const EnemyBullet = struct {
-    pub const speed: f32 = 800;
-    pub const friction: f32 = 0;
-    pub const size: f32 = 20;
-    pub const team: u32 = 2;
-    pub const damage: u32 = 50;
-    pub const max_health: u32 = 1;
-
-    id: Id = undefined,
-    pos: Vec,
-    vel: Vec,
-    phys: Engine.Phy = .{},
-    health: Engine.Health = .{ .points = max_health },
-    locked_until: u32 = 0,
-    rot: f32,
-    target: Id,
-    boot_time: u32,
-
-    pub fn draw(self: *@This(), game: *Engine) void {
-        if (self.locked_until > game.time) {
-            const emit_pos = self.pos + vec.norm(self.vel) * vec.splat(-size * 0.8);
-            const intensity = 10; //* ((if (self.locked_until > game.time) @as(f32, 1) else 0) + 0.4);
-            for (0..3) |_| {
-                _ = game.world.add(FireParticle{
-                    .pos = emit_pos + self.vel * vec.splat(rl.GetFrameTime()),
-                    .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
-                        vec.splat(100),
-                    .live_until = game.time + 100 - game.prng.random().int(u32) % 40,
-                    .size = intensity,
-                    .color = red,
-                });
-            }
-
-            game.drawCenteredTexture(textures.enemy_bullet, self.pos, vec.ang(self.vel), size, rl.WHITE);
-        } else {
-            game.drawCenteredTexture(textures.enemy_bullet, self.pos, self.rot, size, rl.WHITE);
-        }
-    }
-
-    pub fn update(self: *@This(), game: *Engine) void {
-        const delta = rl.GetFrameTime();
-        const target_pos = (game.world.field(self.target, .pos) orelse return).*;
-        const dir = vec.ang(target_pos - self.pos);
-        if (self.locked_until < game.time) {
-            self.rot = vec.moveTowardsAngle(self.rot, dir, delta * std.math.tau * 1.2);
-            self.rot = vec.normalizeAng(self.rot);
-            self.vel *= vec.splat(1 - 3 * delta);
-            if (self.rot == dir) {
-                self.locked_until = game.time + 1400;
-                self.vel = vec.rad(dir, speed);
-
-                for (0..20) |_| {
-                    _ = game.world.add(FireParticle{
-                        .pos = self.pos + self.vel * vec.splat(-rl.GetFrameTime()),
-                        .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
-                            vec.splat(200),
-                        .live_until = game.time + 240 - game.prng.random().int(u32) % 100,
-                        .size = 10,
-                        .color = red,
-                    });
-                }
-            }
-        } else if (vec.dist(target_pos, self.pos) > 1400) {
-            self.locked_until = 0;
-        } else {
-            self.rot = vec.moveTowardsAngle(self.rot, dir, delta);
-            const sub = self.vel * vec.splat(delta * 3);
-            self.vel -= sub;
-            self.vel += vec.rad(self.rot, vec.len(sub));
-        }
-    }
-
-    pub fn onCollision(self: *@This(), game: *Engine, other: Id) void {
-        const health: *Engine.Health = game.world.field(other, .health) orelse return;
-        _ = health.takeDamage(self, other, game);
+        if (game.world.field(other, .reload_timer)) |t| t.* = game.time + World.cnst(other, .reload);
         game.queueDelete(self.id);
     }
 
     pub fn onDelete(self: *@This(), game: *Engine) void {
-        for (0..20) |_| {
+        for (0..10) |_| {
             _ = game.world.add(FireParticle{
                 .pos = self.pos + self.vel * vec.splat(-rl.GetFrameTime()),
                 .vel = vec.unit(game.prng.random().float(f32) * std.math.tau) *
-                    vec.splat(300),
-                .live_until = game.time + 240 - game.prng.random().int(u32) % 100,
-                .size = 20,
+                    vec.splat(200),
+                .live_until = game.time + 200 - game.prng.random().int(u32) % 80,
+                .size = 15,
                 .color = red,
             });
         }

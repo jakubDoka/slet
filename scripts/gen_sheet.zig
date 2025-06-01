@@ -1,6 +1,6 @@
 const std = @import("std");
-const resources = @import("resources.zig");
-const rl = @import("rl.zig").rl;
+const resources = @import("resources");
+const rl = @import("rl").rl;
 
 pub fn main() !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -50,7 +50,7 @@ pub fn main() !void {
     defer out_file.close();
     const writer = out_file.writer();
 
-    try writer.print("const rl = @import(\"../rl.zig\").rl;\n", .{});
+    try writer.print("const rl = @import(\"rl\").rl;\n", .{});
     for (names.items, frames) |n, f| {
         const rect = f.r.f;
         try writer.print(
