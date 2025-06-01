@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    rl.addIncludePath(b.path("vendored/raylib/src/"));
 
     const resources = b.createModule(.{
         .root_source_file = b.path("src/resources.zig"),
@@ -65,8 +66,6 @@ pub fn build(b: *std.Build) !void {
     });
     exe.root_module.addAnonymousImport("sheet_image", .{ .root_source_file = sheet_image_file });
 
-    exe.addLibraryPath(.{ .cwd_relative = "/usr/lib/" });
-    //exe.addIncludePath(.{ .cwd_relative = "/usr/include/" });
     exe.linkLibrary(raylib_artifact);
 
     const runa = b.addRunArtifact(exe);

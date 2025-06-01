@@ -1,7 +1,8 @@
 # slet
 
 ```sh
-zig version # 0.13.0
+git clone --recursive http://github.com/jakubDoka/slet
+zig version # 0.14.0
 zig build run
 ```
 

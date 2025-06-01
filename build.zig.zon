@@ -3,10 +3,7 @@
     .fingerprint = 0x56e1c8ed89ab147b,
     .version = "0.1.1",
     .dependencies = .{
-        .raylib = .{
-            .url = "https://github.com/raysan5/raylib/archive/99dfec070a32d22dc1e1973a2a5e110e4304f435.tar.gz",
-            .hash = "1220a0debb5f054a99a9558ecc60aef193d494fead95cd0eee810701c578f98a3a4f",
-        },
+        .raylib = .{ .path = "vendored/raylib" },
     },
     .paths = .{""},
 }
