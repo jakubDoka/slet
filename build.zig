@@ -17,8 +17,8 @@ pub fn build(b: *std.Build) !void {
     });
 
     const raylib_artifact = raylib_dep.artifact("raylib");
-    raylib_artifact.addLibraryPath(b.path("assets/lib"));
-    raylib_artifact.addIncludePath(b.path("assets/include"));
+    raylib_artifact.addLibraryPath(b.path("src/assets/lib"));
+    raylib_artifact.addIncludePath(b.path("src/assets/include"));
     const raylib_linux_artifact = raylib_linux_dep.artifact("raylib");
 
     const rl = b.createModule(.{
