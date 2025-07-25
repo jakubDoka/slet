@@ -40,6 +40,8 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = b.path("scripts/gen_sheet.zig"),
         .optimize = .Debug,
         .target = b.graph.host,
+        .use_lld = false,
+        .use_llvm = false,
     });
     gen_sprite_sheet_exe.linkLibrary(raylib_linux_artifact);
     gen_sprite_sheet_exe.root_module.addImport("resources", resources);

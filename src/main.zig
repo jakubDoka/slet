@@ -137,6 +137,7 @@ pub const Level = struct {
         @import("levels/DodgeGun.zig"),
         @import("levels/Covardice.zig"),
         @import("levels/Toreador.zig"),
+        @import("levels/Swarm.zig"),
     };
 
     var list = b: {
